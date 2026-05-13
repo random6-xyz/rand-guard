@@ -1,0 +1,10 @@
+[alias]
+x = "run -p xtask --"
+xbe = "run -p xtask -- build-ebpf"
+xbu = "run -p xtask -- build-user"
+xb = "run -p xtask -- build"
+xr = "run -p xtask -- run"
+xd = "run -p xtask -- debug"
+xf = "run -p xtask -- format"
+xc = "run -p xtask -- check"
+xp = "run -p xtask -- prepare"
