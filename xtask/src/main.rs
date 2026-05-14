@@ -8,8 +8,9 @@ const USAGE: &str = "usage: cargo xtask <command> [command...]\n\n\
         l, clippy       Clippy all\n\
         t, test         Test userspace\n\n\
         b, build        Build release all\n\
-        r, run          Run\n\
-        cs, ci-smoke    Build release all, run with CI_SMOKE\n\n\
+        r, run          Run\n\n\
+        cs, ci-smoke    Build release all, run with CI_SMOKE\n\
+        cf, ci-format   Check format for ci\n\n\
         h, help         Print command\n";
 
 fn main() -> anyhow::Result<()> {
@@ -20,7 +21,7 @@ fn main() -> anyhow::Result<()> {
 
     for cmd in std::env::args().skip(1) {
         match cmd.as_str() {
-            "f" | "format" => fmt_all()?,
+            "f" | "format" => fmt_all(false)?,
             "c" | "check" => check_all()?,
             "l" | "clippy" => clippy_all()?,
             "t" | "test" => test_all()?,
@@ -30,6 +31,7 @@ fn main() -> anyhow::Result<()> {
             }
             "r" | "run" => run_user(false, false)?,
             "cs" | "ci-smoke" => run_user(false, true)?,
+            "cf" | "ci-format" => fmt_all(true)?,
             "h" | "help" => println!("{USAGE}"),
             _ => bail!(USAGE),
         }
@@ -125,11 +127,15 @@ fn run_user(debug: bool, ci_smoke: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn fmt_all() -> anyhow::Result<()> {
-    run(
-        Command::new("cargo").args(["fmt", "--all"]),
-        "cargo fmt all",
-    )?;
+fn fmt_all(ci: bool) -> anyhow::Result<()> {
+    let mut command = Command::new("cargo");
+    command.args(["fmt", "--all"]);
+
+    if ci {
+        command.args(["--", "--check"]);
+    }
+
+    run(&mut command, "cargo fmt")?;
 
     Ok(())
 }

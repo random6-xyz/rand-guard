@@ -13,7 +13,7 @@ jobs:
   rust-check:
     name: Rust check / fmt / clippy
     runs-on: ubuntu-24.04
-  
+
     steps:
       - uses: actions/checkout@v4
 
@@ -21,7 +21,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      
+
       - name: Install nightly Rust for eBPF
         uses: dtolnay/rust-toolchain@nightly
         with:
@@ -31,7 +31,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Format check all
-        run: cargo run -p xtask -- format
+        run: cargo run -p xtask -- ci-format
 
       - name: Cargo check all
         run: cargo run -p xtask -- check
