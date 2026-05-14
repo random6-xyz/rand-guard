@@ -216,6 +216,15 @@ fn clippy_all() -> anyhow::Result<()> {
 }
 
 fn ci_smoke() -> anyhow::Result<()> {
+    Command::new("timeout")
+        .args([
+            "4s",
+            "bash",
+            "-c",
+            "sleep 1; while true; do /bin/true; sleep 0.1; done",
+        ])
+        .spawn()?;
+
     let status = Command::new("sudo")
         .args(["-E", "./target/release/edr-user"])
         .env(
