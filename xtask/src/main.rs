@@ -12,6 +12,8 @@ const USAGE: &str = "usage: cargo xtask <command>\n\n\
         c, check        Check all code\n\
         l, clippy       Clippy all code\n\
         p, prepare      Format, check, clippy all code\n\
+        cs, ci-smoke    Smoke test eBPF\n\
+        t, test         Test all code\n\
         h, help         Print command\n";
 
 fn main() -> anyhow::Result<()> {
@@ -63,6 +65,12 @@ fn main() -> anyhow::Result<()> {
             check_all()?;
             clippy_all()
         }
+        "cs" | "ci-smoke" => {
+            build_ebpf(true)?;
+            build_user(true)?;
+            ci_smoke()
+        }
+        "t" | "test" => test_all(),
         "h" | "help" => {
             print!("{USAGE}");
             Ok(())
@@ -202,6 +210,46 @@ fn clippy_all() -> anyhow::Result<()> {
             "warnings",
         ]),
         "cargo clippy ebpf",
+    )?;
+
+    Ok(())
+}
+
+fn ci_smoke() -> anyhow::Result<()> {
+    let status = Command::new("sudo")
+        .args(["-E", "./target/release/edr-user"])
+        .env(
+            "EDR_EBPF_OBJECT",
+            "target/bpfel-unknown-none/release/edr-ebpf",
+        )
+        .env("CI_SMOKE", "1")
+        .status()
+        .context("failed to run user loader with sudo directl in ci-smoke mode")?;
+
+    if !status.success() {
+        bail!("userspace program failed during ci-smoke");
+    }
+
+    Ok(())
+}
+
+fn test_all() -> anyhow::Result<()> {
+    run(
+        Command::new("cargo").args(["test", "-p", "edr-user", "-p", "edr-common", "-p", "xtask"]),
+        "cargo test userspace",
+    )?;
+    run(
+        Command::new("cargo").args([
+            "+nightly",
+            "test",
+            "-Z",
+            "build-std=core",
+            "--target",
+            "bpfel-unknown-none",
+            "-p",
+            "edr-ebpf",
+        ]),
+        "cargo test ebpf",
     )?;
 
     Ok(())

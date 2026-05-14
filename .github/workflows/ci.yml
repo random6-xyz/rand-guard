@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branch: [ dev ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  rust-check:
+    name: Rust check / fmt / clippy
+    runs-on: ubuntu-24.04
+  
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      
+      - name: Install nightly Rust for eBPF
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format check all
+        run: cargo run -p xtask -- format
+
+      - name: Cargo check all
+        run: cargo run -p xtask -- check
+
+      - name: Cargo test all
+        run: cargo run -p xtask -- test
+
+  build:
+    name: Build all
+    runs-on: ubuntu-24.04
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Install nightly Rust for eBPF
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install bpf-linker
+        run: cargo install bpf-linker --locked
+
+      - name: Build userspace
+        run: cargo run -p xtask -- build-user
+
+      - name: Build eBPF
+        run: cargo run -p xtask -- build-eBPF
+
+  ebpf-smoke:
+    name: eBPF smoke test
+    runs-on: ubuntu-24.04
+    needs: [rust-check, build]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Install nightly Rust for eBPF
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install bpf-linker and runtime tools
+        run: |
+          cargo install bpf-linker --locked
+          sudo apt-get update
+          sudo apt-get install -y bpftool linux-tools-common linux-tools-generic
+
+      - name: Show kernel and BTF info
+        run: |
+          uname -a
+          test -e /sys/kernel/btf/vmlinux
+          bpftool feature probe kernel || true
+
+      - name: Build
+        run: cargo run -p xtask -- build
+
+      - name: Smoke test load/unload
+        run: cargo run -p xtask -- ci-smoke
