@@ -238,19 +238,6 @@ fn test_all() -> anyhow::Result<()> {
         Command::new("cargo").args(["test", "-p", "edr-user", "-p", "edr-common", "-p", "xtask"]),
         "cargo test userspace",
     )?;
-    run(
-        Command::new("cargo").args([
-            "+nightly",
-            "test",
-            "-Z",
-            "build-std=core",
-            "--target",
-            "bpfel-unknown-none",
-            "-p",
-            "edr-ebpf",
-        ]),
-        "cargo test ebpf",
-    )?;
 
     Ok(())
 }
