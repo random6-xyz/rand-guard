@@ -1,82 +1,41 @@
 use anyhow::{Context, bail};
 use std::process::Command;
 
-const USAGE: &str = "usage: cargo xtask <command>\n\n\
+const USAGE: &str = "usage: cargo xtask <command> [command...]\n\n\
         commands:\n\n\
-        be, build-ebpf  Format, check, clippy, and build eBPF\n\
-        bu, build-user  Format, check, clippy, and build user program\n\
-        b, build        Format, check, clippy, and build all\n\
-        r, run          Format, check, clippy, build eBPF, and run user program\n\
-        d, debug        Format, check, clippy, build eBPF, and run user program in debug mode\n\
-        f, format       Format all code\n\
-        c, check        Check all code\n\
-        l, clippy       Clippy all code\n\
-        p, prepare      Format, check, clippy all code\n\
-        cs, ci-smoke    Smoke test eBPF\n\
-        t, test         Test all code\n\
+        f, format       Format all\n\
+        c, check        Check all\n\
+        l, clippy       Clippy all\n\
+        t, test         Test userspace\n\n\
+        b, build        Build release all\n\
+        r, run          Run\n\
+        cs, ci-smoke    Build release all, run with CI_SMOKE\n\n\
         h, help         Print command\n";
 
 fn main() -> anyhow::Result<()> {
-    let Some(cmd) = std::env::args().nth(1) else {
+    let argc = std::env::args().len();
+    if argc <= 1 {
         bail!(USAGE);
-    };
-
-    match cmd.as_str() {
-        "be" | "build-ebpf" => {
-            fmt_all()?;
-            check_all()?;
-            clippy_all()?;
-            build_ebpf(true)
-        }
-        "bu" | "build-user" => {
-            fmt_all()?;
-            check_all()?;
-            clippy_all()?;
-            build_user(true)
-        }
-        "b" | "build" => {
-            fmt_all()?;
-            check_all()?;
-            clippy_all()?;
-            build_ebpf(true)?;
-            build_user(true)
-        }
-        "r" | "run" => {
-            fmt_all()?;
-            check_all()?;
-            clippy_all()?;
-            build_ebpf(true)?;
-            build_user(true)?;
-            run_user(false)
-        }
-        "d" | "debug" => {
-            fmt_all()?;
-            check_all()?;
-            clippy_all()?;
-            build_ebpf(false)?;
-            build_user(false)?;
-            run_user(true)
-        }
-        "f" | "format" => fmt_all(),
-        "c" | "check" => check_all(),
-        "l" | "clippy" => clippy_all(),
-        "p" | "prepare" => {
-            fmt_all()?;
-            check_all()?;
-            clippy_all()
-        }
-        "cs" | "ci-smoke" => {
-            build_ebpf(true)?;
-            build_user(true)?;
-            ci_smoke()
-        }
-        "t" | "test" => test_all(),
-        "h" | "help" => {
-            print!("{USAGE}");
-            Ok(())
-        }
-        _ => bail!("unknown command: {cmd}"),
     }
+
+    for cmd in std::env::args().skip(1) {
+        match cmd.as_str() {
+            "f" | "format" => fmt_all()?,
+            "c" | "check" => check_all()?,
+            "l" | "clippy" => clippy_all()?,
+            "t" | "test" => test_all()?,
+            "b" | "build" => {
+                build_ebpf(true)?;
+                build_user(true)?;
+            }
+            "r" | "run" => run_user(false, false)?,
+            "cs" | "ci-smoke" => run_user(false, true)?,
+            "h" | "help" => println!("{USAGE}"),
+            _ => bail!(USAGE),
+        }
+    }
+
+    Ok(())
 }
 
 fn build_user(release: bool) -> anyhow::Result<()> {
@@ -122,7 +81,7 @@ fn build_ebpf(release: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run_user(debug: bool) -> anyhow::Result<()> {
+fn run_user(debug: bool, ci_smoke: bool) -> anyhow::Result<()> {
     let user_bin = if debug {
         "./target/debug/edr-user"
     } else {
@@ -135,14 +94,23 @@ fn run_user(debug: bool) -> anyhow::Result<()> {
         "target/bpfel-unknown-none/release/edr-ebpf"
     };
 
-    let status = Command::new("sudo")
+    let mut command = Command::new("sudo");
+
+    if ci_smoke {
+        command.env("CI_SMOKE", "1");
+    }
+
+    let status = command
         .args(["-E", user_bin])
         .env("EDR_EBPF_OBJECT", ebpf_obj)
         .status()
         .context("failed to run user loader with sudo directly")?;
 
     if !status.success() {
-        bail!("userspace program failed");
+        bail!(
+            "userspace program failed in {} mode.",
+            if ci_smoke { "CI_SMOKE" } else { "normal" }
+        );
     }
 
     Ok(())
@@ -211,33 +179,6 @@ fn clippy_all() -> anyhow::Result<()> {
         ]),
         "cargo clippy ebpf",
     )?;
-
-    Ok(())
-}
-
-fn ci_smoke() -> anyhow::Result<()> {
-    Command::new("timeout")
-        .args([
-            "4s",
-            "bash",
-            "-c",
-            "sleep 1; while true; do /bin/true; sleep 0.1; done",
-        ])
-        .spawn()?;
-
-    let status = Command::new("sudo")
-        .args(["-E", "./target/release/edr-user"])
-        .env(
-            "EDR_EBPF_OBJECT",
-            "target/bpfel-unknown-none/release/edr-ebpf",
-        )
-        .env("CI_SMOKE", "1")
-        .status()
-        .context("failed to run user loader with sudo directl in ci-smoke mode")?;
-
-    if !status.success() {
-        bail!("userspace program failed during ci-smoke");
-    }
 
     Ok(())
 }

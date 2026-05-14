@@ -55,7 +55,7 @@ jobs:
       - name: Install nightly Rust for eBPF
         uses: dtolnay/rust-toolchain@nightly
         with:
-          components: rust-src, rustfmt, clippy
+          components: rust-src
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -66,11 +66,8 @@ jobs:
             cargo install bpf-linker --locked
           fi
 
-      - name: Build userspace
-        run: cargo run -p xtask -- build-user
-
-      - name: Build eBPF
-        run: cargo run -p xtask -- build-ebpf
+      - name: Build all
+        run: cargo run -p xtask -- build
 
   ebpf-smoke:
     name: eBPF smoke test
@@ -86,7 +83,7 @@ jobs:
       - name: Install nightly Rust for eBPF
         uses: dtolnay/rust-toolchain@nightly
         with:
-          components: rust-src, rustfmt, clippy
+          components: rust-src
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
