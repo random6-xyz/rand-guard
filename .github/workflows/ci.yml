@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branch: [ dev ]
+    branches: [ dev ]
 
 env:
   CARGO_TERM_COLOR: always
@@ -36,6 +36,9 @@ jobs:
       - name: Cargo check all
         run: cargo run -p xtask -- check
 
+      - name: Cargo clippy all
+        run: cargo run -p xtask -- clippy
+
       - name: Cargo test all
         run: cargo run -p xtask -- test
 
@@ -58,13 +61,16 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install bpf-linker
-        run: cargo install bpf-linker --locked
+        run: |
+          if ! command -v bpf-linker >/dev/null; then
+            cargo install bpf-linker --locked
+          fi
 
       - name: Build userspace
         run: cargo run -p xtask -- build-user
 
       - name: Build eBPF
-        run: cargo run -p xtask -- build-eBPF
+        run: cargo run -p xtask -- build-ebpf
 
   ebpf-smoke:
     name: eBPF smoke test
@@ -87,7 +93,9 @@ jobs:
 
       - name: Install bpf-linker and runtime tools
         run: |
-          cargo install bpf-linker --locked
+          if ! command -v bpf-linker >/dev/null; then
+            cargo install bpf-linker --locked
+          fi
           sudo apt-get update
           sudo apt-get install -y bpftool linux-tools-common linux-tools-generic
 
@@ -95,7 +103,7 @@ jobs:
         run: |
           uname -a
           test -e /sys/kernel/btf/vmlinux
-          bpftool feature probe kernel || true
+          sudo bpftool feature probe kernel || true
 
       - name: Build
         run: cargo run -p xtask -- build
