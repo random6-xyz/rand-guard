@@ -15,10 +15,7 @@ static EVENTS: RingBuf = RingBuf::with_byte_size(4096, 0);
 
 #[tracepoint]
 pub fn sched_process_exec(ctx: TracePointContext) -> u32 {
-    match try_sched_process_exec(ctx) {
-        Ok(ret) => ret,
-        Err(_) => 1,
-    }
+    try_sched_process_exec(ctx).unwrap_or(1)
 }
 
 fn try_sched_process_exec(_ctx: TracePointContext) -> Result<u32, i64> {

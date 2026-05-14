@@ -3,14 +3,15 @@ use std::process::Command;
 
 const USAGE: &str = "usage: cargo xtask <command>\n\n\
         commands:\n\n\
-        be, build-ebpf  Format, check, and build eBPF\n\
-        bu, build-user  Format, check, and build user program\n\
-        b, build        Format, check, and build all\n\
-        r, run          Format, check, build eBPF, and run user program\n\
-        d, debug        Format, check, build eBPF, and run user program in debug mode\n\
+        be, build-ebpf  Format, check, clippy, and build eBPF\n\
+        bu, build-user  Format, check, clippy, and build user program\n\
+        b, build        Format, check, clippy, and build all\n\
+        r, run          Format, check, clippy, build eBPF, and run user program\n\
+        d, debug        Format, check, clippy, build eBPF, and run user program in debug mode\n\
         f, format       Format all code\n\
         c, check        Check all code\n\
-        p, prepare      Format, check all code\n\
+        l, clippy       Clippy all code\n\
+        p, prepare      Format, check, clippy all code\n\
         h, help         Print command\n";
 
 fn main() -> anyhow::Result<()> {
@@ -22,22 +23,26 @@ fn main() -> anyhow::Result<()> {
         "be" | "build-ebpf" => {
             fmt_all()?;
             check_all()?;
+            clippy_all()?;
             build_ebpf(true)
         }
         "bu" | "build-user" => {
             fmt_all()?;
             check_all()?;
+            clippy_all()?;
             build_user(true)
         }
         "b" | "build" => {
             fmt_all()?;
             check_all()?;
+            clippy_all()?;
             build_ebpf(true)?;
             build_user(true)
         }
         "r" | "run" => {
             fmt_all()?;
             check_all()?;
+            clippy_all()?;
             build_ebpf(true)?;
             build_user(true)?;
             run_user(false)
@@ -45,15 +50,18 @@ fn main() -> anyhow::Result<()> {
         "d" | "debug" => {
             fmt_all()?;
             check_all()?;
+            clippy_all()?;
             build_ebpf(false)?;
             build_user(false)?;
             run_user(true)
         }
         "f" | "format" => fmt_all(),
         "c" | "check" => check_all(),
+        "l" | "clippy" => clippy_all(),
         "p" | "prepare" => {
             fmt_all()?;
-            check_all()
+            check_all()?;
+            clippy_all()
         }
         "h" | "help" => {
             print!("{USAGE}");
@@ -159,6 +167,43 @@ fn check_all() -> anyhow::Result<()> {
         ]),
         "cargo check ebpf",
     )?;
+
+    Ok(())
+}
+
+fn clippy_all() -> anyhow::Result<()> {
+    run(
+        Command::new("cargo").args([
+            "clippy",
+            "-p",
+            "edr-user",
+            "-p",
+            "edr-common",
+            "-p",
+            "xtask",
+            "--",
+            "-D",
+            "warnings",
+        ]),
+        "cargo clippy userspace",
+    )?;
+    run(
+        Command::new("cargo").args([
+            "+nightly",
+            "clippy",
+            "-Z",
+            "build-std=core",
+            "--target",
+            "bpfel-unknown-none",
+            "-p",
+            "edr-ebpf",
+            "--",
+            "-D",
+            "warnings",
+        ]),
+        "cargo clippy ebpf",
+    )?;
+
     Ok(())
 }
 
