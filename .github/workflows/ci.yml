@@ -86,7 +86,7 @@ jobs:
       - name: Install nightly Rust for eBPF
         uses: dtolnay/rust-toolchain@nightly
         with:
-          components: rust-src
+          components: rust-src, rustfmt, clippy
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -97,12 +97,18 @@ jobs:
             cargo install bpf-linker --locked
           fi
           sudo apt-get update
-          sudo apt-get install -y linux-tools-common linux-tools-generic
+          sudo apt-get install -y \
+            bpftool \
+            linux-tools-common \
+            linux-tools-generic \
+            linux-tools-azure \
+            linux-cloud-tools-azure
 
       - name: Show kernel and BTF info
         run: |
           uname -a
           test -e /sys/kernel/btf/vmlinux
+          which bpftool || true
           sudo bpftool feature probe kernel || true
 
       - name: Build
