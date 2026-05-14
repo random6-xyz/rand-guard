@@ -98,6 +98,15 @@ fn run_user(debug: bool, ci_smoke: bool) -> anyhow::Result<()> {
 
     if ci_smoke {
         command.env("CI_SMOKE", "1");
+
+        Command::new("timeout")
+            .args([
+                "4s",
+                "bash",
+                "-c",
+                "sleep 1; while true; do /bin/true; sleep 0.1; done",
+            ])
+            .spawn()?;
     }
 
     let status = command
