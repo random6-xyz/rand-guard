@@ -3,11 +3,13 @@ use aya::{maps::ring_buf::RingBuf, programs::TracePoint};
 use edr_common::ExecEvent;
 use tokio::io::unix::AsyncFd;
 use tokio::signal;
+use tokio::time::{Duration, sleep};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let ebpf_path = std::env::var("EDR_EBPF_OBJECT")
         .unwrap_or_else(|_| "crates/ebpf/target/bpfel-unknown-none/debug/edr-ebpf".to_string());
+    let ci_smoke = std::env::var("CI_SMOKE").as_deref() == Ok("1");
 
     let data = std::fs::read(&ebpf_path)?;
     let mut ebpf = aya::Ebpf::load(&data)?;
@@ -49,10 +51,16 @@ async fn main() -> anyhow::Result<()> {
                             event.uid,
                             comm
                         );
+
+                        if ci_smoke {
+                            return Ok(());
+                        }
                     }
                 }
-
-            }
+            },
+            _ = sleep(Duration::from_secs(3)), if ci_smoke => {
+                anyhow::bail!("CI smoke timeout: no ringbuf event received within 3 seconds.");
+            },
             _ = signal::ctrl_c() => {
                 println!("shutting down");
                 break;
