@@ -36,6 +36,7 @@ pub fn format_process_exec_event_json(event: &ProcessExecEvent) -> String {
 
     serde_json::json!({
         "event_type": "process_exec",
+        "schema_version": event.header.version,
         "timestamp_ns": event.header.timestamp_ns,
         "pid": event.header.pid,
         "tid": event.header.tid,
@@ -72,6 +73,7 @@ mod tests {
                 .expect("process exec event output should be valid JSON");
 
         assert_eq!(value["event_type"], "process_exec");
+        assert_eq!(value["schema_version"], EVENT_SCHEMA_VERSION);
         assert_eq!(value["timestamp_ns"], 123);
         assert_eq!(value["pid"], 100);
         assert_eq!(value["tid"], 101);
