@@ -1,12 +1,11 @@
 mod config;
 mod logging;
+mod output;
 mod privilege;
 
 use anyhow::Context;
 use aya::{maps::ring_buf::RingBuf, programs::TracePoint};
-use edr_common::{
-    EVENT_FLAG_FILENAME_TRUNCATED, EVENT_SCHEMA_VERSION, EventKind, ProcessExecEvent,
-};
+use edr_common::{EVENT_SCHEMA_VERSION, EventKind, ProcessExecEvent};
 use tokio::io::unix::AsyncFd;
 use tokio::signal;
 use tokio::time::{Duration, sleep};
@@ -42,6 +41,7 @@ async fn main() -> anyhow::Result<()> {
 
     let ring_buf = RingBuf::try_from(ebpf.map_mut("EVENTS").context("EVENTS map not found")?)?;
     let mut async_ring = AsyncFd::new(ring_buf)?;
+    let mut output = output::JsonOutput::stdout();
 
     info!(
         agent = %config.agent.id,
@@ -66,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
                             && event.header.version == EVENT_SCHEMA_VERSION
                             && event.header.size as usize == core::mem::size_of::<ProcessExecEvent>()
                         {
-                            println!("{}", format_process_exec_event_json(&event));
+                            output.write_process_exec(&event)?;
 
                             if ci_smoke {
                                 return Ok(());
@@ -87,68 +87,4 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
-}
-
-fn format_process_exec_event_json(event: &ProcessExecEvent) -> String {
-    let comm = fixed_string(&event.comm, event.comm.len());
-    let filename_len = usize::from(event.filename_len).min(event.filename.len());
-    let filename = fixed_string(&event.filename, filename_len);
-
-    serde_json::json!({
-        "event_type": "process_exec",
-        "timestamp_ns": event.header.timestamp_ns,
-        "pid": event.header.pid,
-        "tid": event.header.tid,
-        "ppid": event.header.ppid,
-        "uid": event.header.uid,
-        "gid": event.header.gid,
-        "comm": comm,
-        "filename": filename,
-        "filename_truncated": event.header.flags & EVENT_FLAG_FILENAME_TRUNCATED != 0,
-    })
-    .to_string()
-}
-
-fn fixed_string(bytes: &[u8], max_len: usize) -> String {
-    let len = bytes[..max_len]
-        .iter()
-        .position(|byte| *byte == 0)
-        .unwrap_or(max_len);
-
-    String::from_utf8_lossy(&bytes[..len]).into_owned()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn formats_process_exec_event_as_json() {
-        let mut event = ProcessExecEvent::default();
-        event.header.kind = EventKind::ProcessExec.as_u16();
-        event.header.version = EVENT_SCHEMA_VERSION;
-        event.header.size = ProcessExecEvent::SIZE;
-        event.header.flags = EVENT_FLAG_FILENAME_TRUNCATED;
-        event.header.timestamp_ns = 123;
-        event.header.pid = 100;
-        event.header.tid = 101;
-        event.header.ppid = 1;
-        event.header.uid = 1000;
-        event.header.gid = 1000;
-        event.comm[..4].copy_from_slice(b"bash");
-        event.filename[..13].copy_from_slice(b"/usr/bin/bash");
-        event.filename_len = 13;
-
-        let value: serde_json::Value =
-            serde_json::from_str(&format_process_exec_event_json(&event))
-                .expect("process exec event output should be valid JSON");
-
-        assert_eq!(value["event_type"], "process_exec");
-        assert_eq!(value["timestamp_ns"], 123);
-        assert_eq!(value["pid"], 100);
-        assert_eq!(value["uid"], 1000);
-        assert_eq!(value["comm"], "bash");
-        assert_eq!(value["filename"], "/usr/bin/bash");
-        assert_eq!(value["filename_truncated"], true);
-    }
 }
