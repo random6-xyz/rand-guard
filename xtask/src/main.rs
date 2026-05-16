@@ -1,4 +1,5 @@
 use anyhow::{Context, bail};
+use serde_json::Value;
 use std::process::Command;
 
 const USAGE: &str = "usage: cargo xtask <command> [command...]\n\n\
@@ -30,7 +31,11 @@ fn main() -> anyhow::Result<()> {
                 build_user(true)?;
             }
             "r" | "run" => run_user(false, false)?,
-            "cs" | "ci-smoke" => run_user(false, true)?,
+            "cs" | "ci-smoke" => {
+                build_ebpf(true)?;
+                build_user(true)?;
+                run_user(false, true)?;
+            }
             "cf" | "ci-format" => fmt_all(true)?,
             "h" | "help" => println!("{USAGE}"),
             _ => bail!(USAGE),
@@ -99,12 +104,29 @@ fn run_user(debug: bool, ci_smoke: bool) -> anyhow::Result<()> {
 
         Command::new("timeout")
             .args([
-                "4s",
+                "6s",
                 "bash",
                 "-c",
                 "sleep 1; while true; do /bin/true; sleep 0.1; done",
             ])
             .spawn()?;
+    }
+
+    if ci_smoke {
+        let output = command
+            .args(["-E", user_bin_str])
+            .env("EDR_EBPF_OBJECT", ebpf_obj_str)
+            .output()
+            .context("failed to run user loader with sudo directly")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("userspace program failed in CI_SMOKE mode: {stderr}");
+        }
+
+        validate_ci_smoke_output(&output.stdout)?;
+
+        return Ok(());
     }
 
     let status = command
@@ -114,10 +136,28 @@ fn run_user(debug: bool, ci_smoke: bool) -> anyhow::Result<()> {
         .context("failed to run user loader with sudo directly")?;
 
     if !status.success() {
-        bail!(
-            "userspace program failed in {} mode.",
-            if ci_smoke { "CI_SMOKE" } else { "normal" }
-        );
+        bail!("userspace program failed in normal mode.");
+    }
+
+    Ok(())
+}
+
+fn validate_ci_smoke_output(stdout: &[u8]) -> anyhow::Result<()> {
+    let stdout = std::str::from_utf8(stdout).context("CI smoke stdout was not valid UTF-8")?;
+
+    let event = stdout
+        .lines()
+        .find_map(|line| serde_json::from_str::<Value>(line).ok())
+        .context("CI smoke did not emit a JSON event on stdout")?;
+
+    if event["event_type"] != "process_exec" {
+        bail!("CI smoke emitted unexpected event_type: {event}");
+    }
+    if !event["pid"].is_u64() || !event["timestamp_ns"].is_u64() {
+        bail!("CI smoke process_exec event was missing numeric pid/timestamp: {event}");
+    }
+    if event["filename"].as_str().is_none_or(str::is_empty) {
+        bail!("CI smoke process_exec event was missing filename: {event}");
     }
 
     Ok(())

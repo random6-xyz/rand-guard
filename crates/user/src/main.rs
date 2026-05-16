@@ -76,8 +76,8 @@ async fn main() -> anyhow::Result<()> {
                 }
                 guard.clear_ready();
             },
-            _ = sleep(Duration::from_secs(3)), if ci_smoke => {
-                anyhow::bail!("CI smoke timeout: no ringbuf event received within 3 seconds.");
+            _ = sleep(Duration::from_secs(5)), if ci_smoke => {
+                anyhow::bail!("CI smoke timeout: no ringbuf event received within 5 seconds.");
             },
             _ = signal::ctrl_c() => {
                 info!("shutting down");
