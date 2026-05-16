@@ -27,9 +27,7 @@ struct PrivilegeStatus {
 
 impl PrivilegeStatus {
     fn is_sufficient(&self) -> bool {
-        self.euid == 0
-            || self.has_cap(CAP_SYS_ADMIN)
-            || (self.has_cap(CAP_BPF) && self.has_cap(CAP_PERFMON))
+        self.has_cap(CAP_SYS_ADMIN) || (self.has_cap(CAP_BPF) && self.has_cap(CAP_PERFMON))
     }
 
     fn has_cap(&self, cap: u32) -> bool {
@@ -50,7 +48,7 @@ pub fn ensure_sufficient() -> anyhow::Result<()> {
     }
 
     anyhow::bail!(
-        "insufficient privileges to load eBPF programs: run as root or grant CAP_BPF and CAP_PERFMON (CAP_SYS_ADMIN also works on older kernels)"
+        "insufficient privileges to load eBPF programs: grant CAP_BPF and CAP_PERFMON (CAP_SYS_ADMIN also works on older kernels)"
     );
 }
 
@@ -88,13 +86,13 @@ mod tests {
     }
 
     #[test]
-    fn root_is_sufficient_without_capabilities() {
+    fn root_without_capabilities_is_rejected() {
         let status = PrivilegeStatus {
             euid: 0,
             effective_caps: [0, 0],
         };
 
-        assert!(status.is_sufficient());
+        assert!(!status.is_sufficient());
     }
 
     #[test]
