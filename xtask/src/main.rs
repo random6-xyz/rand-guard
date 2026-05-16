@@ -84,17 +84,13 @@ fn build_ebpf(release: bool) -> anyhow::Result<()> {
 }
 
 fn run_user(debug: bool, ci_smoke: bool) -> anyhow::Result<()> {
-    let user_bin = if debug {
-        "./target/debug/edr-user"
-    } else {
-        "./target/release/edr-user"
-    };
+    let repo_root = std::env::current_dir().context("failed to get current directory")?;
 
-    let ebpf_obj = if debug {
-        "target/bpfel-unknown-none/debug/edr-ebpf"
-    } else {
-        "target/bpfel-unknown-none/release/edr-ebpf"
-    };
+    let mode = if debug { "debug" } else { "release" };
+    let user_bin = repo_root.join(format!("target/{mode}/edr-user"));
+    let user_bin_str = user_bin.to_str().context("path is not valid UTF-8")?;
+    let ebpf_obj = repo_root.join(format!("target/bpfel-unknown-none/{mode}/edr-ebpf"));
+    let ebpf_obj_str = ebpf_obj.to_str().context("path is not valid UTF-8")?;
 
     let mut command = Command::new("sudo");
 
@@ -112,8 +108,8 @@ fn run_user(debug: bool, ci_smoke: bool) -> anyhow::Result<()> {
     }
 
     let status = command
-        .args(["-E", user_bin])
-        .env("EDR_EBPF_OBJECT", ebpf_obj)
+        .args(["-E", user_bin_str])
+        .env("EDR_EBPF_OBJECT", ebpf_obj_str)
         .status()
         .context("failed to run user loader with sudo directly")?;
 
