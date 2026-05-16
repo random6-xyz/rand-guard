@@ -13,8 +13,7 @@ use tracing::{info, warn};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let config_path =
-        std::env::var("EDR_CONFIG").unwrap_or_else(|_| "config.example.toml".to_string());
+    let config_path = std::env::var("EDR_CONFIG").unwrap_or_else(|_| "config.toml".to_string());
     let config = config::Config::from_path(&config_path)?;
     logging::init(&config.agent.log_level)?;
     config.validate_current_runtime()?;
