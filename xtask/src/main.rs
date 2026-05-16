@@ -1,4 +1,5 @@
 use anyhow::{Context, bail};
+use serde_json::Value;
 use std::process::Command;
 
 const USAGE: &str = "usage: cargo xtask <command> [command...]\n\n\
@@ -30,7 +31,11 @@ fn main() -> anyhow::Result<()> {
                 build_user(true)?;
             }
             "r" | "run" => run_user(false, false)?,
-            "cs" | "ci-smoke" => run_user(false, true)?,
+            "cs" | "ci-smoke" => {
+                build_ebpf(true)?;
+                build_user(true)?;
+                run_user(false, true)?;
+            }
             "cf" | "ci-format" => fmt_all(true)?,
             "h" | "help" => println!("{USAGE}"),
             _ => bail!(USAGE),
@@ -84,17 +89,13 @@ fn build_ebpf(release: bool) -> anyhow::Result<()> {
 }
 
 fn run_user(debug: bool, ci_smoke: bool) -> anyhow::Result<()> {
-    let user_bin = if debug {
-        "./target/debug/edr-user"
-    } else {
-        "./target/release/edr-user"
-    };
+    let repo_root = std::env::current_dir().context("failed to get current directory")?;
 
-    let ebpf_obj = if debug {
-        "target/bpfel-unknown-none/debug/edr-ebpf"
-    } else {
-        "target/bpfel-unknown-none/release/edr-ebpf"
-    };
+    let mode = if debug { "debug" } else { "release" };
+    let user_bin = repo_root.join(format!("target/{mode}/edr-user"));
+    let user_bin_str = user_bin.to_str().context("path is not valid UTF-8")?;
+    let ebpf_obj = repo_root.join(format!("target/bpfel-unknown-none/{mode}/edr-ebpf"));
+    let ebpf_obj_str = ebpf_obj.to_str().context("path is not valid UTF-8")?;
 
     let mut command = Command::new("sudo");
 
@@ -103,7 +104,7 @@ fn run_user(debug: bool, ci_smoke: bool) -> anyhow::Result<()> {
 
         Command::new("timeout")
             .args([
-                "4s",
+                "6s",
                 "bash",
                 "-c",
                 "sleep 1; while true; do /bin/true; sleep 0.1; done",
@@ -111,17 +112,56 @@ fn run_user(debug: bool, ci_smoke: bool) -> anyhow::Result<()> {
             .spawn()?;
     }
 
+    if ci_smoke {
+        let config = repo_root.join("config.example.toml");
+        let config_str = config.to_str().context("path is not valid UTF-8")?;
+
+        let output = command
+            .args(["-E", user_bin_str])
+            .env("EDR_EBPF_OBJECT", ebpf_obj_str)
+            .env("EDR_CONFIG", config_str)
+            .output()
+            .context("failed to run user loader with sudo directly")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("userspace program failed in CI_SMOKE mode: {stderr}");
+        }
+
+        validate_ci_smoke_output(&output.stdout)?;
+
+        return Ok(());
+    }
+
     let status = command
-        .args(["-E", user_bin])
-        .env("EDR_EBPF_OBJECT", ebpf_obj)
+        .args(["-E", user_bin_str])
+        .env("EDR_EBPF_OBJECT", ebpf_obj_str)
         .status()
         .context("failed to run user loader with sudo directly")?;
 
     if !status.success() {
-        bail!(
-            "userspace program failed in {} mode.",
-            if ci_smoke { "CI_SMOKE" } else { "normal" }
-        );
+        bail!("userspace program failed in normal mode.");
+    }
+
+    Ok(())
+}
+
+fn validate_ci_smoke_output(stdout: &[u8]) -> anyhow::Result<()> {
+    let stdout = std::str::from_utf8(stdout).context("CI smoke stdout was not valid UTF-8")?;
+
+    let event = stdout
+        .lines()
+        .find_map(|line| serde_json::from_str::<Value>(line).ok())
+        .context("CI smoke did not emit a JSON event on stdout")?;
+
+    if event["event_type"] != "process_exec" {
+        bail!("CI smoke emitted unexpected event_type: {event}");
+    }
+    if !event["pid"].is_u64() || !event["timestamp_ns"].is_u64() {
+        bail!("CI smoke process_exec event was missing numeric pid/timestamp: {event}");
+    }
+    if event["filename"].as_str().is_none_or(str::is_empty) {
+        bail!("CI smoke process_exec event was missing filename: {event}");
     }
 
     Ok(())

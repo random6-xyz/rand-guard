@@ -1,0 +1,70 @@
+[agent]
+id = "dev-host-001"
+mode = "monitor" # monitor | detect
+log_level = "info"
+
+[ebpf]
+enabled = true
+buffer_size = 8192
+
+[events]
+process = true
+file = false
+network = false
+
+[process]
+enabled = true
+hooks = ["execve"]
+collect_args = false
+collect_env = false
+collect_cwd = false
+
+[file]
+enabled = false
+hooks = ["openat", "unlink", "rename"]
+watch_paths = ["/etc", "/usr/bin", "/bin"]
+exclude_paths = ["/var/log", "/tmp", "/proc", "/sys"]
+
+[network]
+enabled = false
+hooks = ["connect"]
+collect_dns = false
+collect_payload = false
+
+[[rules]]
+id = "PROC-001"
+name = "Shell spawned by web server"
+enabled = false
+type = "process"
+severity = "high"
+action = "alert"
+parent_names = ["nginx", "apache2", "httpd"]
+process_names = ["sh", "bash", "dash"]
+
+[[rules]]
+id = "FILE-001"
+name = "Sensitive file touched"
+enabled = false
+type = "file"
+severity = "high"
+action = "alert"
+paths = ["/etc/passwd", "/etc/shadow", "/etc/sudoers"]
+operations = ["open", "write", "unlink", "rename"]
+
+[[rules]]
+id = "NET-001"
+name = "Suspicious outbound port"
+enabled = false
+type = "network"
+severity = "medium"
+action = "alert"
+direction = "outbound"
+ports = [4444, 1337, 31337]
+
+[output]
+type = "stdout" # stdout is supported by the current MVP runtime
+format = "json"
+
+[performance]
+max_events_per_second = 5000
+drop_when_full = true
