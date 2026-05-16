@@ -6,10 +6,6 @@ pub fn init(default_filter: &str) -> anyhow::Result<()> {
     let filter = env_filter_from(rust_log.as_deref(), default_filter)
         .context("failed to parse log filter")?;
 
-    tracing_log::LogTracer::init()
-        .map_err(|error| anyhow!(error))
-        .context("failed to initialize log bridge")?;
-
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
