@@ -1,5 +1,6 @@
 mod config;
 mod logging;
+mod privilege;
 
 use anyhow::Context;
 use aya::{maps::ring_buf::RingBuf, programs::TracePoint};
@@ -16,6 +17,7 @@ async fn main() -> anyhow::Result<()> {
     let config = config::Config::from_path(&config_path)?;
     logging::init(&config.agent.log_level)?;
     config.validate_current_runtime()?;
+    privilege::ensure_sufficient()?;
 
     let ebpf_path = std::env::var("EDR_EBPF_OBJECT")
         .unwrap_or_else(|_| "crates/ebpf/target/bpfel-unknown-none/debug/edr-ebpf".to_string());

@@ -264,6 +264,7 @@ dependencies = [
  "aya-log",
  "bytes",
  "edr-common",
+ "libc",
  "serde",
  "serde_json",
  "tokio",
