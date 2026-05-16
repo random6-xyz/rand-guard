@@ -2,23 +2,24 @@
 #![no_main]
 
 use aya_ebpf::{
-    cty::c_void,
-    helpers::{bpf_get_current_pid_tgid, bpf_get_current_uid_gid, r#gen},
+    helpers::{bpf_get_current_comm, bpf_get_current_pid_tgid, bpf_get_current_uid_gid, r#gen},
     macros::{map, tracepoint},
     maps::ring_buf::RingBuf,
     programs::TracePointContext,
 };
-use edr_common::ExecEvent;
+use edr_common::{
+    EVENT_FLAG_FILENAME_TRUNCATED, EVENT_SCHEMA_VERSION, EventKind, PATH_LEN, ProcessExecEvent,
+};
 
 #[map]
-static EVENTS: RingBuf = RingBuf::with_byte_size(4096, 0);
+static EVENTS: RingBuf = RingBuf::with_byte_size(8192, 0);
 
 #[tracepoint]
 pub fn sched_process_exec(ctx: TracePointContext) -> u32 {
     try_sched_process_exec(ctx).unwrap_or(1)
 }
 
-fn try_sched_process_exec(_ctx: TracePointContext) -> Result<u32, i64> {
+fn try_sched_process_exec(ctx: TracePointContext) -> Result<u32, i64> {
     let pid_tgid = bpf_get_current_pid_tgid();
     let uid_gid = bpf_get_current_uid_gid();
 
@@ -27,19 +28,32 @@ fn try_sched_process_exec(_ctx: TracePointContext) -> Result<u32, i64> {
     let gid = (uid_gid >> 32) as u32;
     let uid = uid_gid as u32;
 
-    if let Some(mut entry) = EVENTS.reserve::<ExecEvent>(0) {
+    if let Some(mut entry) = EVENTS.reserve::<ProcessExecEvent>(0) {
         unsafe {
             let ptr = entry.as_mut_ptr();
 
-            (*ptr).pid = pid;
-            (*ptr).tid = tid;
-            (*ptr).ppid = 0;
-            (*ptr).uid = uid;
-            (*ptr).gid = gid;
+            (*ptr).header.kind = EventKind::ProcessExec.as_u16();
+            (*ptr).header.version = EVENT_SCHEMA_VERSION;
+            (*ptr).header.size = ProcessExecEvent::SIZE;
+            (*ptr).header.flags = 0;
+            (*ptr).header.timestamp_ns = r#gen::bpf_ktime_get_ns();
+            (*ptr).header.pid = pid;
+            (*ptr).header.tid = tid;
+            (*ptr).header.ppid = 0;
+            (*ptr).header.uid = uid;
+            (*ptr).header.gid = gid;
+            (*ptr).header._pad = 0;
+            (*ptr)._pad = [0; 6];
 
-            let ret = r#gen::bpf_get_current_comm((*ptr).comm.as_mut_ptr() as *mut c_void, 16);
+            match bpf_get_current_comm() {
+                Ok(comm) => (*ptr).comm = comm,
+                Err(ret) => {
+                    entry.discard(0);
+                    return Err(ret);
+                }
+            }
 
-            if ret < 0 {
+            if let Err(ret) = read_sched_exec_filename(&ctx, &mut *ptr) {
                 entry.discard(0);
                 return Err(ret);
             }
@@ -49,6 +63,51 @@ fn try_sched_process_exec(_ctx: TracePointContext) -> Result<u32, i64> {
     }
 
     Ok(0)
+}
+
+unsafe fn read_sched_exec_filename(
+    ctx: &TracePointContext,
+    event: &mut ProcessExecEvent,
+) -> Result<(), i64> {
+    // sched_process_exec tracepoint layout: __data_loc filename is at offset 8.
+    let data_loc = unsafe { ctx.read_at::<u32>(8)? };
+    let filename_offset = (data_loc & 0xffff) as usize;
+    let data_len = data_loc >> 16;
+
+    if filename_offset == 0 || data_len == 0 {
+        return Err(-1);
+    }
+
+    let mut copied = 0usize;
+    let mut saw_null = false;
+
+    for index in 0..PATH_LEN {
+        event.filename[index] = 0;
+    }
+
+    for index in 0..PATH_LEN {
+        if index as u32 >= data_len {
+            break;
+        }
+
+        let byte = unsafe { ctx.read_at::<u8>(filename_offset + index)? };
+        event.filename[index] = byte;
+
+        if byte == 0 {
+            saw_null = true;
+            break;
+        }
+
+        copied = index + 1;
+    }
+
+    event.filename_len = copied as u16;
+
+    if !saw_null && data_len as usize >= PATH_LEN {
+        event.header.flags |= EVENT_FLAG_FILENAME_TRUNCATED;
+    }
+
+    Ok(())
 }
 
 #[cfg(not(test))]

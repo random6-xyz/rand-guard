@@ -4,7 +4,9 @@ mod privilege;
 
 use anyhow::Context;
 use aya::{maps::ring_buf::RingBuf, programs::TracePoint};
-use edr_common::ExecEvent;
+use edr_common::{
+    EVENT_FLAG_FILENAME_TRUNCATED, EVENT_SCHEMA_VERSION, EventKind, ProcessExecEvent,
+};
 use tokio::io::unix::AsyncFd;
 use tokio::signal;
 use tokio::time::{Duration, sleep};
@@ -55,18 +57,24 @@ async fn main() -> anyhow::Result<()> {
                 let ring_buf = guard.get_inner_mut();
                 while let Some(item) = ring_buf.next() {
                     let bytes: &[u8] = &item;
-                    if bytes.len() >= core::mem::size_of::<ExecEvent>() {
+                    if bytes.len() >= core::mem::size_of::<ProcessExecEvent>() {
                         let event = unsafe {
-                            core::ptr::read_unaligned(bytes.as_ptr() as *const ExecEvent)
+                            core::ptr::read_unaligned(bytes.as_ptr() as *const ProcessExecEvent)
                         };
 
-                        println!("{}", format_exec_event_json(&event));
+                        if event.header.kind == EventKind::ProcessExec.as_u16()
+                            && event.header.version == EVENT_SCHEMA_VERSION
+                            && event.header.size as usize == core::mem::size_of::<ProcessExecEvent>()
+                        {
+                            println!("{}", format_process_exec_event_json(&event));
 
-                        if ci_smoke {
-                            return Ok(());
+                            if ci_smoke {
+                                return Ok(());
+                            }
                         }
                     }
                 }
+                guard.clear_ready();
             },
             _ = sleep(Duration::from_secs(3)), if ci_smoke => {
                 anyhow::bail!("CI smoke timeout: no ringbuf event received within 3 seconds.");
@@ -81,24 +89,33 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn format_exec_event_json(event: &ExecEvent) -> String {
-    let comm_len = event
-        .comm
-        .iter()
-        .position(|byte| *byte == 0)
-        .unwrap_or(event.comm.len());
-    let comm = String::from_utf8_lossy(&event.comm[..comm_len]);
+fn format_process_exec_event_json(event: &ProcessExecEvent) -> String {
+    let comm = fixed_string(&event.comm, event.comm.len());
+    let filename_len = usize::from(event.filename_len).min(event.filename.len());
+    let filename = fixed_string(&event.filename, filename_len);
 
     serde_json::json!({
-        "event_type": "exec",
-        "pid": event.pid,
-        "tid": event.tid,
-        "ppid": event.ppid,
-        "uid": event.uid,
-        "gid": event.gid,
+        "event_type": "process_exec",
+        "timestamp_ns": event.header.timestamp_ns,
+        "pid": event.header.pid,
+        "tid": event.header.tid,
+        "ppid": event.header.ppid,
+        "uid": event.header.uid,
+        "gid": event.header.gid,
         "comm": comm,
+        "filename": filename,
+        "filename_truncated": event.header.flags & EVENT_FLAG_FILENAME_TRUNCATED != 0,
     })
     .to_string()
+}
+
+fn fixed_string(bytes: &[u8], max_len: usize) -> String {
+    let len = bytes[..max_len]
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(max_len);
+
+    String::from_utf8_lossy(&bytes[..len]).into_owned()
 }
 
 #[cfg(test)]
@@ -106,23 +123,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn formats_exec_event_as_json() {
-        let mut event = ExecEvent {
-            pid: 100,
-            tid: 101,
-            ppid: 1,
-            uid: 1000,
-            gid: 1000,
-            comm: [0; 16],
-        };
+    fn formats_process_exec_event_as_json() {
+        let mut event = ProcessExecEvent::default();
+        event.header.kind = EventKind::ProcessExec.as_u16();
+        event.header.version = EVENT_SCHEMA_VERSION;
+        event.header.size = ProcessExecEvent::SIZE;
+        event.header.flags = EVENT_FLAG_FILENAME_TRUNCATED;
+        event.header.timestamp_ns = 123;
+        event.header.pid = 100;
+        event.header.tid = 101;
+        event.header.ppid = 1;
+        event.header.uid = 1000;
+        event.header.gid = 1000;
         event.comm[..4].copy_from_slice(b"bash");
+        event.filename[..13].copy_from_slice(b"/usr/bin/bash");
+        event.filename_len = 13;
 
-        let value: serde_json::Value = serde_json::from_str(&format_exec_event_json(&event))
-            .expect("exec event output should be valid JSON");
+        let value: serde_json::Value =
+            serde_json::from_str(&format_process_exec_event_json(&event))
+                .expect("process exec event output should be valid JSON");
 
-        assert_eq!(value["event_type"], "exec");
+        assert_eq!(value["event_type"], "process_exec");
+        assert_eq!(value["timestamp_ns"], 123);
         assert_eq!(value["pid"], 100);
         assert_eq!(value["uid"], 1000);
         assert_eq!(value["comm"], "bash");
+        assert_eq!(value["filename"], "/usr/bin/bash");
+        assert_eq!(value["filename_truncated"], true);
     }
 }
