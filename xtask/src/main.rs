@@ -113,9 +113,13 @@ fn run_user(debug: bool, ci_smoke: bool) -> anyhow::Result<()> {
     }
 
     if ci_smoke {
+        let config = repo_root.join("config.example.toml");
+        let config_str = config.to_str().context("path is not valid UTF-8")?;
+
         let output = command
             .args(["-E", user_bin_str])
             .env("EDR_EBPF_OBJECT", ebpf_obj_str)
+            .env("EDR_CONFIG", config_str)
             .output()
             .context("failed to run user loader with sudo directly")?;
 
