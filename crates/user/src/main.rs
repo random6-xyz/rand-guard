@@ -1,4 +1,5 @@
 mod config;
+mod logging;
 
 use anyhow::Context;
 use aya::{maps::ring_buf::RingBuf, programs::TracePoint};
@@ -6,12 +7,14 @@ use edr_common::ExecEvent;
 use tokio::io::unix::AsyncFd;
 use tokio::signal;
 use tokio::time::{Duration, sleep};
+use tracing::{info, warn};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config_path =
         std::env::var("EDR_CONFIG").unwrap_or_else(|_| "config.example.toml".to_string());
     let config = config::Config::from_path(&config_path)?;
+    logging::init(&config.agent.log_level)?;
     config.validate_current_runtime()?;
 
     let ebpf_path = std::env::var("EDR_EBPF_OBJECT")
@@ -22,7 +25,7 @@ async fn main() -> anyhow::Result<()> {
     let mut ebpf = aya::Ebpf::load(&data)?;
 
     if let Err(e) = aya_log::EbpfLogger::init(&mut ebpf) {
-        eprintln!("failed to initialized eBPF logger: {e}");
+        warn!(error = %e, "failed to initialize eBPF logger");
     }
 
     let program: &mut TracePoint = ebpf
@@ -36,9 +39,11 @@ async fn main() -> anyhow::Result<()> {
     let ring_buf = RingBuf::try_from(ebpf.map_mut("EVENTS").context("EVENTS map not found")?)?;
     let mut async_ring = AsyncFd::new(ring_buf)?;
 
-    eprintln!(
-        "EDR started. agent={} mode={:?} config={} listening for exec events...",
-        config.agent.id, config.agent.mode, config_path
+    info!(
+        agent = %config.agent.id,
+        mode = ?config.agent.mode,
+        config = %config_path,
+        "EDR started and listening for exec events"
     );
 
     loop {
@@ -65,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
                 anyhow::bail!("CI smoke timeout: no ringbuf event received within 3 seconds.");
             },
             _ = signal::ctrl_c() => {
-                eprintln!("shutting down");
+                info!("shutting down");
                 break;
             }
         }
