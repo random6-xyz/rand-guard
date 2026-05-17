@@ -190,6 +190,27 @@ mod tests {
         assert!(value["source"].is_null());
     }
 
+    #[test]
+    fn formats_process_exit_with_group_dead_false() {
+        let event = ProcessExit {
+            pid: 42,
+            tid: 42,
+            comm: "sh".to_string(),
+            group_dead: false,
+            uid: 1000,
+            gid: 1000,
+            timestamp_ns: 3000,
+        };
+
+        let value: serde_json::Value = serde_json::from_str(&format_normalized_event_json(
+            &NormalizedEvent::ProcessExit(event),
+        ))
+        .expect("process exit event output should be valid JSON");
+
+        assert_eq!(value["event_type"], "process_exit");
+        assert_eq!(value["group_dead"], false);
+    }
+
     fn sample_process_start() -> ProcessStart {
         ProcessStart {
             pid: 100,

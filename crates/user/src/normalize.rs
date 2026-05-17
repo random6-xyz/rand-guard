@@ -328,4 +328,38 @@ mod tests {
             Some("execve".to_string())
         );
     }
+
+    #[test]
+    fn exec_after_fork_preserves_ppid_and_first_seen() {
+        let mut table = ProcessTable::new();
+        let fork = make_fork_event(1, 42, 42, "bash", "sh");
+        normalize_fork(&fork, &mut table);
+
+        let mut exec = make_exec_event(42, 42, 0, "/bin/sh", "sh");
+        exec.header.timestamp_ns = 5000;
+        let normalized = normalize_exec(&exec, &mut table);
+
+        match normalized {
+            NormalizedEvent::ProcessStart(start) => {
+                assert_eq!(start.ppid, 1);
+                assert_eq!(start.timestamp_ns, 5000);
+            }
+            other => panic!("expected ProcessStart, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fork_without_parent_context_still_emits_relationship() {
+        let mut table = ProcessTable::new();
+        let fork = make_fork_event(1, 100, 100, "bash", "cat");
+        let normalized = normalize_fork(&fork, &mut table);
+
+        match normalized {
+            NormalizedEvent::ProcessRelationship(rel) => {
+                assert_eq!(rel.parent_pid, 1);
+                assert_eq!(rel.child_pid, 100);
+            }
+            other => panic!("expected ProcessRelationship, got {:?}", other),
+        }
+    }
 }

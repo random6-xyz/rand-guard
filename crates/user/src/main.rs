@@ -88,6 +88,9 @@ async fn main() -> anyhow::Result<()> {
     let mut output = output::JsonOutput::stdout();
     let mut table = ProcessTable::new();
 
+    let mut ci_smoke_start_seen = false;
+    let mut ci_smoke_rel_or_exit_seen = false;
+
     info!(
         agent = %config.agent.id,
         mode = ?config.agent.mode,
@@ -168,14 +171,24 @@ async fn main() -> anyhow::Result<()> {
 
                     if let Some(event) = normalized {
                         output.write_normalized(&event)?;
-                        if ci_smoke && matches!(event, NormalizedEvent::ProcessStart(_)) {
-                            return Ok(());
+                        if ci_smoke {
+                            match &event {
+                                NormalizedEvent::ProcessStart(_) => ci_smoke_start_seen = true,
+                                NormalizedEvent::ProcessRelationship(_) |
+                                NormalizedEvent::ProcessExit(_) => ci_smoke_rel_or_exit_seen = true,
+                            }
+                            if ci_smoke_start_seen && ci_smoke_rel_or_exit_seen {
+                                return Ok(());
+                            }
                         }
                     }
                 }
                 guard.clear_ready();
             },
             _ = sleep(Duration::from_secs(5)), if ci_smoke => {
+                if ci_smoke_start_seen {
+                    return Ok(());
+                }
                 anyhow::bail!("CI smoke timeout: no ringbuf event received within 5 seconds.");
             },
             _ = signal::ctrl_c() => {

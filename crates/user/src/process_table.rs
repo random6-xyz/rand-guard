@@ -303,4 +303,45 @@ mod tests {
         // After consumption the stored record should have None
         assert!(table.get(&(42, 42)).unwrap().pending_source.is_none());
     }
+
+    #[test]
+    fn exec_preserves_first_seen_from_fork() {
+        let mut table = ProcessTable::new();
+        let fork = make_fork_event(1, 42, 42, "bash", "sh");
+        table.insert_from_fork(&fork);
+
+        let mut exec = make_exec_event(42, 42, 0, "/bin/sh", "sh");
+        exec.header.timestamp_ns = 5000;
+        let record = table.update_from_exec(&exec);
+        assert_eq!(record.first_seen, 2000); // from fork
+        assert_eq!(record.last_seen, 5000);
+    }
+
+    #[test]
+    fn multiple_children_from_same_parent() {
+        let mut table = ProcessTable::new();
+        let fork1 = make_fork_event(1, 10, 10, "bash", "sh");
+        let fork2 = make_fork_event(1, 11, 11, "bash", "cat");
+        table.insert_from_fork(&fork1);
+        table.insert_from_fork(&fork2);
+
+        assert_eq!(table.get(&(10, 10)).unwrap().comm, "sh");
+        assert_eq!(table.get(&(11, 11)).unwrap().comm, "cat");
+    }
+
+    #[test]
+    fn full_lifecycle_fork_exec_exit() {
+        let mut table = ProcessTable::new();
+        let fork = make_fork_event(1, 42, 42, "bash", "sh");
+        table.insert_from_fork(&fork);
+
+        let exec = make_exec_event(42, 42, 0, "/bin/sh", "sh");
+        table.update_from_exec(&exec);
+
+        let exit = make_exit_event(42, 42, "sh");
+        let record = table.mark_exit(&exit).expect("record should exist");
+        assert!(record.exited);
+        assert_eq!(record.exe_path, "/bin/sh");
+        assert_eq!(record.ppid, 1);
+    }
 }
