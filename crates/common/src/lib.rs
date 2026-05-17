@@ -126,13 +126,25 @@ impl Default for ProcessForkEvent {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 pub struct ProcessExitEvent {
     pub header: EventHeader,
-    pub exit_code: u32,
-    pub _pad: u32,
+    pub comm: [u8; COMM_LEN],
+    pub group_dead: u8,
+    pub _pad: [u8; 7],
 }
 
 impl ProcessExitEvent {
     pub const SIZE: u16 = core::mem::size_of::<Self>() as u16;
+}
+
+impl Default for ProcessExitEvent {
+    fn default() -> Self {
+        Self {
+            header: EventHeader::default(),
+            comm: [0; COMM_LEN],
+            group_dead: 0,
+            _pad: [0; 7],
+        }
+    }
 }
