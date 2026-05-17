@@ -41,8 +41,14 @@ impl Config {
         if !self.events.process || !self.process.enabled {
             anyhow::bail!("process event collection must be enabled for the current runtime");
         }
-        if self.process.hooks != ["execve"] {
-            anyhow::bail!("only the execve process hook is supported by the current runtime");
+        let supported_hooks: &[&str] = &["execve", "fork", "exit", "execveat"];
+        for hook in &self.process.hooks {
+            if !supported_hooks.contains(&hook.as_str()) {
+                anyhow::bail!(
+                    "process hook '{}' is not supported by the current runtime",
+                    hook
+                );
+            }
         }
         if self.process.collect_args || self.process.collect_env || self.process.collect_cwd {
             anyhow::bail!(
@@ -223,7 +229,7 @@ mod tests {
         assert!(config.events.process);
         assert!(!config.events.file);
         assert!(!config.events.network);
-        assert_eq!(config.process.hooks, ["execve"]);
+        assert_eq!(config.process.hooks, ["execve", "fork", "exit", "execveat"]);
         assert!(!config.process.collect_args);
         assert!(!config.process.collect_env);
         assert!(!config.process.collect_cwd);
@@ -265,13 +271,16 @@ mod tests {
     fn rejects_unsupported_process_options() {
         let mut config = Config::from_str(include_str!("../../../config.example.toml"))
             .expect("example config should parse");
-        config.process.hooks.push("exit".to_string());
+        config.process.hooks.push("clone".to_string());
 
         let err = config
             .validate_current_runtime()
             .expect_err("unsupported process hooks should be rejected");
 
-        assert!(err.to_string().contains("only the execve process hook"));
+        assert!(
+            err.to_string()
+                .contains("process hook 'clone' is not supported")
+        );
 
         let mut config = Config::from_str(include_str!("../../../config.example.toml"))
             .expect("example config should parse");

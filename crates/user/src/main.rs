@@ -5,7 +5,10 @@ mod privilege;
 
 use anyhow::Context;
 use aya::{maps::ring_buf::RingBuf, programs::TracePoint};
-use edr_common::{EVENT_SCHEMA_VERSION, EventKind, ProcessExecEvent};
+use edr_common::{
+    EVENT_SCHEMA_VERSION, EventKind, ExecSyscallEvent, ProcessExecEvent, ProcessExitEvent,
+    ProcessForkEvent,
+};
 use tokio::io::unix::AsyncFd;
 use tokio::signal;
 use tokio::time::{Duration, sleep};
@@ -30,13 +33,50 @@ async fn main() -> anyhow::Result<()> {
         warn!(error = %e, "failed to initialize eBPF logger");
     }
 
-    let program: &mut TracePoint = ebpf
-        .program_mut("sched_process_exec")
-        .context("program not found")?
-        .try_into()?;
+    let hooks: std::collections::HashSet<&str> =
+        config.process.hooks.iter().map(|s| s.as_str()).collect();
 
-    program.load()?;
-    program.attach("sched", "sched_process_exec")?;
+    if hooks.contains("execve") {
+        attach_tracepoint(
+            &mut ebpf,
+            "sched_process_exec",
+            "sched",
+            "sched_process_exec",
+        )?;
+    }
+
+    if hooks.contains("fork") {
+        attach_tracepoint(
+            &mut ebpf,
+            "sched_process_fork",
+            "sched",
+            "sched_process_fork",
+        )?;
+    }
+
+    if hooks.contains("exit") {
+        attach_tracepoint(
+            &mut ebpf,
+            "sched_process_exit",
+            "sched",
+            "sched_process_exit",
+        )?;
+    }
+
+    if hooks.contains("execveat") {
+        attach_tracepoint(
+            &mut ebpf,
+            "sys_enter_execve",
+            "syscalls",
+            "sys_enter_execve",
+        )?;
+        attach_tracepoint(
+            &mut ebpf,
+            "sys_enter_execveat",
+            "syscalls",
+            "sys_enter_execveat",
+        )?;
+    }
 
     let ring_buf = RingBuf::try_from(ebpf.map_mut("EVENTS").context("EVENTS map not found")?)?;
     let mut async_ring = AsyncFd::new(ring_buf)?;
@@ -45,8 +85,9 @@ async fn main() -> anyhow::Result<()> {
     info!(
         agent = %config.agent.id,
         mode = ?config.agent.mode,
+        hooks = ?config.process.hooks,
         config = %config_path,
-        "EDR started and listening for exec events"
+        "EDR started and listening for lifecycle events"
     );
 
     loop {
@@ -56,21 +97,63 @@ async fn main() -> anyhow::Result<()> {
                 let ring_buf = guard.get_inner_mut();
                 while let Some(item) = ring_buf.next() {
                     let bytes: &[u8] = &item;
-                    if bytes.len() >= core::mem::size_of::<ProcessExecEvent>() {
-                        let event = unsafe {
-                            core::ptr::read_unaligned(bytes.as_ptr() as *const ProcessExecEvent)
-                        };
+                    if bytes.len() < core::mem::size_of::<edr_common::EventHeader>() {
+                        continue;
+                    }
 
-                        if event.header.kind == EventKind::ProcessExec.as_u16()
-                            && event.header.version == EVENT_SCHEMA_VERSION
-                            && event.header.size as usize == core::mem::size_of::<ProcessExecEvent>()
-                        {
-                            output.write_process_exec(&event)?;
+                    let header = unsafe {
+                        core::ptr::read_unaligned(bytes.as_ptr() as *const edr_common::EventHeader)
+                    };
 
-                            if ci_smoke {
-                                return Ok(());
+                    if header.version != EVENT_SCHEMA_VERSION {
+                        continue;
+                    }
+
+                    match header.kind {
+                        k if k == EventKind::ProcessExec.as_u16() => {
+                            if bytes.len() >= core::mem::size_of::<ProcessExecEvent>()
+                                && header.size as usize == core::mem::size_of::<ProcessExecEvent>()
+                            {
+                                let event = unsafe {
+                                    core::ptr::read_unaligned(bytes.as_ptr() as *const ProcessExecEvent)
+                                };
+                                output.write_process_exec(&event)?;
+                                if ci_smoke {
+                                    return Ok(());
+                                }
                             }
                         }
+                        k if k == EventKind::ProcessFork.as_u16() => {
+                            if bytes.len() >= core::mem::size_of::<ProcessForkEvent>()
+                                && header.size as usize == core::mem::size_of::<ProcessForkEvent>()
+                            {
+                                let event = unsafe {
+                                    core::ptr::read_unaligned(bytes.as_ptr() as *const ProcessForkEvent)
+                                };
+                                output.write_process_fork(&event)?;
+                            }
+                        }
+                        k if k == EventKind::ProcessExit.as_u16() => {
+                            if bytes.len() >= core::mem::size_of::<ProcessExitEvent>()
+                                && header.size as usize == core::mem::size_of::<ProcessExitEvent>()
+                            {
+                                let event = unsafe {
+                                    core::ptr::read_unaligned(bytes.as_ptr() as *const ProcessExitEvent)
+                                };
+                                output.write_process_exit(&event)?;
+                            }
+                        }
+                        k if k == EventKind::ExecSyscall.as_u16() => {
+                            if bytes.len() >= core::mem::size_of::<ExecSyscallEvent>()
+                                && header.size as usize == core::mem::size_of::<ExecSyscallEvent>()
+                            {
+                                let event = unsafe {
+                                    core::ptr::read_unaligned(bytes.as_ptr() as *const ExecSyscallEvent)
+                                };
+                                output.write_exec_syscall(&event)?;
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 guard.clear_ready();
@@ -85,5 +168,23 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn attach_tracepoint(
+    ebpf: &mut aya::Ebpf,
+    program_name: &str,
+    category: &str,
+    event: &str,
+) -> anyhow::Result<()> {
+    let program: &mut TracePoint = ebpf
+        .program_mut(program_name)
+        .with_context(|| format!("program '{}' not found", program_name))?
+        .try_into()
+        .with_context(|| format!("program '{}' is not a tracepoint", program_name))?;
+
+    program.load()?;
+    program.attach(category, event)?;
+    info!(program = %program_name, category = %category, event = %event, "tracepoint attached");
     Ok(())
 }

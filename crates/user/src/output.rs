@@ -1,7 +1,10 @@
 use std::io::{self, Write};
 
 use anyhow::Context;
-use edr_common::{EVENT_FLAG_FILENAME_TRUNCATED, ProcessExecEvent};
+use edr_common::{
+    EVENT_FLAG_FILENAME_TRUNCATED, ExecSource, ExecSyscallEvent, ProcessExecEvent,
+    ProcessExitEvent, ProcessForkEvent,
+};
 
 pub struct JsonOutput<W> {
     writer: W,
@@ -21,6 +24,21 @@ impl<W: Write> JsonOutput<W> {
     pub fn write_process_exec(&mut self, event: &ProcessExecEvent) -> anyhow::Result<()> {
         writeln!(self.writer, "{}", format_process_exec_event_json(event))
             .context("failed to write process exec event JSON")
+    }
+
+    pub fn write_process_fork(&mut self, event: &ProcessForkEvent) -> anyhow::Result<()> {
+        writeln!(self.writer, "{}", format_process_fork_event_json(event))
+            .context("failed to write process fork event JSON")
+    }
+
+    pub fn write_process_exit(&mut self, event: &ProcessExitEvent) -> anyhow::Result<()> {
+        writeln!(self.writer, "{}", format_process_exit_event_json(event))
+            .context("failed to write process exit event JSON")
+    }
+
+    pub fn write_exec_syscall(&mut self, event: &ExecSyscallEvent) -> anyhow::Result<()> {
+        writeln!(self.writer, "{}", format_exec_syscall_event_json(event))
+            .context("failed to write exec syscall event JSON")
     }
 
     #[cfg(test)]
@@ -46,6 +64,66 @@ pub fn format_process_exec_event_json(event: &ProcessExecEvent) -> String {
         "comm": comm,
         "filename": filename,
         "filename_truncated": event.header.flags & EVENT_FLAG_FILENAME_TRUNCATED != 0,
+    })
+    .to_string()
+}
+
+pub fn format_process_fork_event_json(event: &ProcessForkEvent) -> String {
+    let parent_comm = fixed_string(&event.parent_comm, event.parent_comm.len());
+    let child_comm = fixed_string(&event.child_comm, event.child_comm.len());
+
+    serde_json::json!({
+        "event_type": "process_fork",
+        "schema_version": event.header.version,
+        "timestamp_ns": event.header.timestamp_ns,
+        "parent_pid": event.parent_pid,
+        "parent_comm": parent_comm,
+        "child_pid": event.child_pid,
+        "child_tid": event.child_tid,
+        "child_comm": child_comm,
+        "uid": event.header.uid,
+        "gid": event.header.gid,
+    })
+    .to_string()
+}
+
+pub fn format_process_exit_event_json(event: &ProcessExitEvent) -> String {
+    let comm = fixed_string(&event.comm, event.comm.len());
+
+    serde_json::json!({
+        "event_type": "process_exit",
+        "schema_version": event.header.version,
+        "timestamp_ns": event.header.timestamp_ns,
+        "pid": event.header.pid,
+        "tid": event.header.tid,
+        "comm": comm,
+        "group_dead": event.group_dead != 0,
+        "uid": event.header.uid,
+        "gid": event.header.gid,
+    })
+    .to_string()
+}
+
+pub fn format_exec_syscall_event_json(event: &ExecSyscallEvent) -> String {
+    let filename_len = usize::from(event.filename_len).min(event.filename.len());
+    let filename = fixed_string(&event.filename, filename_len);
+    let source = match event.source {
+        s if s == ExecSource::Execve as u8 => "execve",
+        s if s == ExecSource::Execveat as u8 => "execveat",
+        _ => "unknown",
+    };
+
+    serde_json::json!({
+        "event_type": "exec_syscall",
+        "schema_version": event.header.version,
+        "timestamp_ns": event.header.timestamp_ns,
+        "pid": event.header.pid,
+        "tid": event.header.tid,
+        "uid": event.header.uid,
+        "gid": event.header.gid,
+        "filename": filename,
+        "filename_truncated": event.header.flags & EVENT_FLAG_FILENAME_TRUNCATED != 0,
+        "source": source,
     })
     .to_string()
 }
