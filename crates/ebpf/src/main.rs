@@ -16,7 +16,7 @@ use edr_common::{
 };
 
 #[map]
-static EVENTS: RingBuf = RingBuf::with_byte_size(8192, 0);
+static EVENTS: RingBuf = RingBuf::with_byte_size(65536, 0);
 
 #[tracepoint]
 pub fn sched_process_exec(ctx: TracePointContext) -> u32 {
