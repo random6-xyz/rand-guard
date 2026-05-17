@@ -71,6 +71,7 @@ Use `xtask` from the repository root.
 - Userspace tests: `cargo run -p xtask -- test`
 - Build release artifacts: `cargo run -p xtask -- build`
 - CI smoke load/unload: `cargo run -p xtask -- ci-smoke`
+- Run edr-user (no sudo needed): `timeout -s INT -k 2s 5s cargo run -p xtask -- run`
 
 Cargo aliases are also available, such as `cargo xf`, `cargo xc`, `cargo xl`, `cargo xt`, `cargo xb`, and `cargo xcs`.
 

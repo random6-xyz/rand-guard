@@ -155,6 +155,11 @@ fn try_sched_process_fork(ctx: TracePointContext) -> Result<u32, i64> {
     let gid = (uid_gid >> 32) as u32;
     let uid = uid_gid as u32;
 
+    // Read tracepoint data BEFORE reserving ring buffer.
+    // Using `?` after reserve would leak the reference on failure.
+    let parent_pid = unsafe { ctx.read_at::<u32>(12)? };
+    let child_pid = unsafe { ctx.read_at::<u32>(20)? };
+
     if let Some(mut entry) = EVENTS.reserve::<ProcessForkEvent>(0) {
         unsafe {
             let ptr = entry.as_mut_ptr();
@@ -164,8 +169,6 @@ fn try_sched_process_fork(ctx: TracePointContext) -> Result<u32, i64> {
             //   offset 12: parent_pid   (pid_t)
             //   offset 16: child_comm   (__data_loc char[])
             //   offset 20: child_pid    (pid_t)
-            let parent_pid = ctx.read_at::<u32>(12)?;
-            let child_pid = ctx.read_at::<u32>(20)?;
 
             (*ptr).header.kind = EventKind::ProcessFork.as_u16();
             (*ptr).header.version = EVENT_SCHEMA_VERSION;
@@ -219,8 +222,14 @@ fn try_sched_process_exit(ctx: TracePointContext) -> Result<u32, i64> {
     //   offset 24: pid (pid_t)
     //   offset 28: prio (int)
     //   offset 32: group_dead (bool)
+    // Read tracepoint data BEFORE reserving ring buffer.
     let pid = unsafe { ctx.read_at::<u32>(24)? };
     let group_dead = unsafe { ctx.read_at::<u8>(32)? };
+
+    let mut comm = [0u8; 16];
+    for (i, item) in comm.iter_mut().enumerate() {
+        *item = unsafe { ctx.read_at::<u8>(8 + i)? };
+    }
 
     if let Some(mut entry) = EVENTS.reserve::<ProcessExitEvent>(0) {
         unsafe {
@@ -240,18 +249,7 @@ fn try_sched_process_exit(ctx: TracePointContext) -> Result<u32, i64> {
 
             (*ptr).group_dead = group_dead;
             (*ptr)._pad = [0; 7];
-
-            for i in 0..16usize {
-                (*ptr).comm[i] = 0;
-            }
-
-            for i in 0..16usize {
-                let byte = ctx.read_at::<u8>(8 + i)?;
-                (*ptr).comm[i] = byte;
-                if byte == 0 {
-                    break;
-                }
-            }
+            (*ptr).comm.copy_from_slice(&comm);
         }
 
         entry.submit(0);
