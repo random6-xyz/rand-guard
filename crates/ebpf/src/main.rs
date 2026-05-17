@@ -8,7 +8,8 @@ use aya_ebpf::{
     programs::TracePointContext,
 };
 use edr_common::{
-    EVENT_FLAG_FILENAME_TRUNCATED, EVENT_SCHEMA_VERSION, EventKind, PATH_LEN, ProcessExecEvent,
+    COMM_LEN, EVENT_FLAG_FILENAME_TRUNCATED, EVENT_SCHEMA_VERSION, EventKind, PATH_LEN,
+    ProcessExecEvent, ProcessForkEvent,
 };
 
 #[map]
@@ -108,6 +109,74 @@ unsafe fn read_sched_exec_filename(
     }
 
     Ok(())
+}
+
+#[tracepoint]
+pub fn sched_process_fork(ctx: TracePointContext) -> u32 {
+    try_sched_process_fork(ctx).unwrap_or(1)
+}
+
+fn try_sched_process_fork(ctx: TracePointContext) -> Result<u32, i64> {
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let uid_gid = bpf_get_current_uid_gid();
+
+    let pid = (pid_tgid >> 32) as u32;
+    let tid = pid_tgid as u32;
+    let gid = (uid_gid >> 32) as u32;
+    let uid = uid_gid as u32;
+
+    if let Some(mut entry) = EVENTS.reserve::<ProcessForkEvent>(0) {
+        unsafe {
+            let ptr = entry.as_mut_ptr();
+
+            (*ptr).header.kind = EventKind::ProcessFork.as_u16();
+            (*ptr).header.version = EVENT_SCHEMA_VERSION;
+            (*ptr).header.size = ProcessForkEvent::SIZE;
+            (*ptr).header.flags = 0;
+            (*ptr).header.timestamp_ns = r#gen::bpf_ktime_get_ns();
+            (*ptr).header.pid = pid;
+            (*ptr).header.tid = tid;
+            (*ptr).header.ppid = 0;
+            (*ptr).header.uid = uid;
+            (*ptr).header.gid = gid;
+            (*ptr).header._pad = 0;
+            (*ptr)._pad = [0; 4];
+
+            // sched_process_fork tracepoint layout on typical Linux kernels:
+            //   offset 8-23:  parent_comm[16]
+            //   offset 24-27: parent_pid (u32)
+            //   offset 28-43: child_comm[16]
+            //   offset 44-47: child_pid (u32)
+            let child_pid = ctx.read_at::<u32>(44)?;
+            (*ptr).child_pid = child_pid;
+            // For a fork, child_tid is typically the same as child_pid
+            // (thread-group leader). Full clone semantics would require
+            // reading task_struct fields, which are unstable across
+            // kernel versions, so we use child_pid as a safe proxy.
+            (*ptr).child_tid = child_pid;
+
+            for i in 0..COMM_LEN {
+                (*ptr).child_comm[i] = 0;
+            }
+
+            // Read child_comm from offset 28.
+            for i in 0..COMM_LEN {
+                match ctx.read_at::<u8>(28 + i) {
+                    Ok(byte) => {
+                        (*ptr).child_comm[i] = byte;
+                        if byte == 0 {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        }
+
+        entry.submit(0);
+    }
+
+    Ok(0)
 }
 
 #[cfg(not(test))]
