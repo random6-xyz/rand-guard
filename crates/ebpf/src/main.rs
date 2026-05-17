@@ -8,8 +8,8 @@ use aya_ebpf::{
     programs::TracePointContext,
 };
 use edr_common::{
-    COMM_LEN, EVENT_FLAG_FILENAME_TRUNCATED, EVENT_SCHEMA_VERSION, EventKind, PATH_LEN,
-    ProcessExecEvent, ProcessForkEvent,
+    EVENT_FLAG_FILENAME_TRUNCATED, EVENT_SCHEMA_VERSION, EventKind, PATH_LEN, ProcessExecEvent,
+    ProcessForkEvent,
 };
 
 #[map]
@@ -111,17 +111,44 @@ unsafe fn read_sched_exec_filename(
     Ok(())
 }
 
+unsafe fn read_data_loc_comm(
+    ctx: &TracePointContext,
+    data_loc_offset: usize,
+    buf: &mut [u8],
+) -> Result<(), i64> {
+    let data_loc = unsafe { ctx.read_at::<u32>(data_loc_offset)? };
+    let str_offset = (data_loc & 0xffff) as usize;
+    let str_len = (data_loc >> 16) as usize;
+
+    if str_offset == 0 {
+        return Err(-1);
+    }
+
+    for item in buf.iter_mut() {
+        *item = 0;
+    }
+
+    for (i, item) in buf.iter_mut().enumerate() {
+        if i >= str_len {
+            break;
+        }
+        let byte = unsafe { ctx.read_at::<u8>(str_offset + i)? };
+        *item = byte;
+        if byte == 0 {
+            break;
+        }
+    }
+
+    Ok(())
+}
+
 #[tracepoint]
 pub fn sched_process_fork(ctx: TracePointContext) -> u32 {
     try_sched_process_fork(ctx).unwrap_or(1)
 }
 
 fn try_sched_process_fork(ctx: TracePointContext) -> Result<u32, i64> {
-    let pid_tgid = bpf_get_current_pid_tgid();
     let uid_gid = bpf_get_current_uid_gid();
-
-    let pid = (pid_tgid >> 32) as u32;
-    let tid = pid_tgid as u32;
     let gid = (uid_gid >> 32) as u32;
     let uid = uid_gid as u32;
 
@@ -129,25 +156,32 @@ fn try_sched_process_fork(ctx: TracePointContext) -> Result<u32, i64> {
         unsafe {
             let ptr = entry.as_mut_ptr();
 
+            // sched_process_fork tracepoint layout:
+            //   offset 8:  parent_comm  (__data_loc char[])
+            //   offset 12: parent_pid   (pid_t)
+            //   offset 16: child_comm   (__data_loc char[])
+            //   offset 20: child_pid    (pid_t)
+            let parent_pid = ctx.read_at::<u32>(12)?;
+            let child_pid = ctx.read_at::<u32>(20)?;
+
             (*ptr).header.kind = EventKind::ProcessFork.as_u16();
             (*ptr).header.version = EVENT_SCHEMA_VERSION;
             (*ptr).header.size = ProcessForkEvent::SIZE;
             (*ptr).header.flags = 0;
             (*ptr).header.timestamp_ns = r#gen::bpf_ktime_get_ns();
-            (*ptr).header.pid = pid;
-            (*ptr).header.tid = tid;
+            (*ptr).header.pid = parent_pid;
+            (*ptr).header.tid = parent_pid;
             (*ptr).header.ppid = 0;
             (*ptr).header.uid = uid;
             (*ptr).header.gid = gid;
             (*ptr).header._pad = 0;
-            (*ptr)._pad = [0; 4];
 
-            // sched_process_fork tracepoint layout on typical Linux kernels:
-            //   offset 8-23:  parent_comm[16]
-            //   offset 24-27: parent_pid (u32)
-            //   offset 28-43: child_comm[16]
-            //   offset 44-47: child_pid (u32)
-            let child_pid = ctx.read_at::<u32>(44)?;
+            (*ptr).parent_pid = parent_pid;
+            if let Err(ret) = read_data_loc_comm(&ctx, 8, &mut (*ptr).parent_comm) {
+                entry.discard(0);
+                return Err(ret);
+            }
+
             (*ptr).child_pid = child_pid;
             // For a fork, child_tid is typically the same as child_pid
             // (thread-group leader). Full clone semantics would require
@@ -155,21 +189,9 @@ fn try_sched_process_fork(ctx: TracePointContext) -> Result<u32, i64> {
             // kernel versions, so we use child_pid as a safe proxy.
             (*ptr).child_tid = child_pid;
 
-            for i in 0..COMM_LEN {
-                (*ptr).child_comm[i] = 0;
-            }
-
-            // Read child_comm from offset 28.
-            for i in 0..COMM_LEN {
-                match ctx.read_at::<u8>(28 + i) {
-                    Ok(byte) => {
-                        (*ptr).child_comm[i] = byte;
-                        if byte == 0 {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
+            if let Err(ret) = read_data_loc_comm(&ctx, 16, &mut (*ptr).child_comm) {
+                entry.discard(0);
+                return Err(ret);
             }
         }
 

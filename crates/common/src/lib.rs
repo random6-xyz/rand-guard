@@ -101,10 +101,11 @@ impl Default for ExecSyscallEvent {
 #[derive(Clone, Copy)]
 pub struct ProcessForkEvent {
     pub header: EventHeader,
+    pub parent_pid: u32,
+    pub parent_comm: [u8; COMM_LEN],
     pub child_pid: u32,
     pub child_tid: u32,
     pub child_comm: [u8; COMM_LEN],
-    pub _pad: [u8; 4],
 }
 
 impl ProcessForkEvent {
@@ -115,10 +116,11 @@ impl Default for ProcessForkEvent {
     fn default() -> Self {
         Self {
             header: EventHeader::default(),
+            parent_pid: 0,
+            parent_comm: [0; COMM_LEN],
             child_pid: 0,
             child_tid: 0,
             child_comm: [0; COMM_LEN],
-            _pad: [0; 4],
         }
     }
 }
