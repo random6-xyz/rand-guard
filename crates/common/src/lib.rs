@@ -11,6 +11,9 @@ pub enum EventKind {
     ProcessExec = 1,
     FileAccess = 2,
     NetworkConnect = 3,
+    ProcessFork = 4,
+    ProcessExit = 5,
+    ExecSyscall = 6,
 }
 
 impl EventKind {
@@ -59,4 +62,75 @@ impl Default for ProcessExecEvent {
             _pad: [0; 6],
         }
     }
+}
+
+#[repr(u8)]
+#[derive(Clone, Copy)]
+pub enum ExecSource {
+    Execve = 1,
+    Execveat = 2,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ExecSyscallEvent {
+    pub header: EventHeader,
+    pub filename: [u8; PATH_LEN],
+    pub filename_len: u16,
+    pub source: u8,
+    pub _pad: [u8; 5],
+}
+
+impl ExecSyscallEvent {
+    pub const SIZE: u16 = core::mem::size_of::<Self>() as u16;
+}
+
+impl Default for ExecSyscallEvent {
+    fn default() -> Self {
+        Self {
+            header: EventHeader::default(),
+            filename: [0; PATH_LEN],
+            filename_len: 0,
+            source: ExecSource::Execve as u8,
+            _pad: [0; 5],
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ProcessForkEvent {
+    pub header: EventHeader,
+    pub child_pid: u32,
+    pub child_tid: u32,
+    pub child_comm: [u8; COMM_LEN],
+    pub _pad: [u8; 4],
+}
+
+impl ProcessForkEvent {
+    pub const SIZE: u16 = core::mem::size_of::<Self>() as u16;
+}
+
+impl Default for ProcessForkEvent {
+    fn default() -> Self {
+        Self {
+            header: EventHeader::default(),
+            child_pid: 0,
+            child_tid: 0,
+            child_comm: [0; COMM_LEN],
+            _pad: [0; 4],
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct ProcessExitEvent {
+    pub header: EventHeader,
+    pub exit_code: u32,
+    pub _pad: u32,
+}
+
+impl ProcessExitEvent {
+    pub const SIZE: u16 = core::mem::size_of::<Self>() as u16;
 }
