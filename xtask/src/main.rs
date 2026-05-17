@@ -151,17 +151,15 @@ fn validate_ci_smoke_output(stdout: &[u8]) -> anyhow::Result<()> {
 
     let event = stdout
         .lines()
-        .find_map(|line| serde_json::from_str::<Value>(line).ok())
-        .context("CI smoke did not emit a JSON event on stdout")?;
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|event| event["event_type"] == "process_start")
+        .context("CI smoke did not emit a process_start JSON event on stdout")?;
 
-    if event["event_type"] != "process_exec" {
-        bail!("CI smoke emitted unexpected event_type: {event}");
-    }
     if !event["pid"].is_u64() || !event["timestamp_ns"].is_u64() {
-        bail!("CI smoke process_exec event was missing numeric pid/timestamp: {event}");
+        bail!("CI smoke process_start event was missing numeric pid/timestamp: {event}");
     }
-    if event["filename"].as_str().is_none_or(str::is_empty) {
-        bail!("CI smoke process_exec event was missing filename: {event}");
+    if event["exe_path"].as_str().is_none_or(str::is_empty) {
+        bail!("CI smoke process_start event was missing exe_path: {event}");
     }
 
     Ok(())

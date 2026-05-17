@@ -1,10 +1,8 @@
 use std::io::{self, Write};
 
 use anyhow::Context;
-use edr_common::{
-    EVENT_FLAG_FILENAME_TRUNCATED, ExecSource, ExecSyscallEvent, ProcessExecEvent,
-    ProcessExitEvent, ProcessForkEvent,
-};
+
+use crate::normalize::{NormalizedEvent, ProcessExit, ProcessRelationship, ProcessStart};
 
 pub struct JsonOutput<W> {
     writer: W,
@@ -21,24 +19,9 @@ impl<W: Write> JsonOutput<W> {
         Self { writer }
     }
 
-    pub fn write_process_exec(&mut self, event: &ProcessExecEvent) -> anyhow::Result<()> {
-        writeln!(self.writer, "{}", format_process_exec_event_json(event))
-            .context("failed to write process exec event JSON")
-    }
-
-    pub fn write_process_fork(&mut self, event: &ProcessForkEvent) -> anyhow::Result<()> {
-        writeln!(self.writer, "{}", format_process_fork_event_json(event))
-            .context("failed to write process fork event JSON")
-    }
-
-    pub fn write_process_exit(&mut self, event: &ProcessExitEvent) -> anyhow::Result<()> {
-        writeln!(self.writer, "{}", format_process_exit_event_json(event))
-            .context("failed to write process exit event JSON")
-    }
-
-    pub fn write_exec_syscall(&mut self, event: &ExecSyscallEvent) -> anyhow::Result<()> {
-        writeln!(self.writer, "{}", format_exec_syscall_event_json(event))
-            .context("failed to write exec syscall event JSON")
+    pub fn write_normalized(&mut self, event: &NormalizedEvent) -> anyhow::Result<()> {
+        writeln!(self.writer, "{}", format_normalized_event_json(event))
+            .context("failed to write normalized event JSON")
     }
 
     #[cfg(test)]
@@ -47,111 +30,74 @@ impl<W: Write> JsonOutput<W> {
     }
 }
 
-pub fn format_process_exec_event_json(event: &ProcessExecEvent) -> String {
-    let comm = fixed_string(&event.comm, event.comm.len());
-    let filename_len = usize::from(event.filename_len).min(event.filename.len());
-    let filename = fixed_string(&event.filename, filename_len);
+pub fn format_normalized_event_json(event: &NormalizedEvent) -> String {
+    match event {
+        NormalizedEvent::ProcessStart(start) => format_process_start_json(start),
+        NormalizedEvent::ProcessExit(exit) => format_process_exit_json(exit),
+        NormalizedEvent::ProcessRelationship(rel) => format_process_relationship_json(rel),
+    }
+}
 
+fn format_process_start_json(start: &ProcessStart) -> String {
     serde_json::json!({
-        "event_type": "process_exec",
-        "schema_version": event.header.version,
-        "timestamp_ns": event.header.timestamp_ns,
-        "pid": event.header.pid,
-        "tid": event.header.tid,
-        "ppid": event.header.ppid,
-        "uid": event.header.uid,
-        "gid": event.header.gid,
-        "comm": comm,
-        "filename": filename,
-        "filename_truncated": event.header.flags & EVENT_FLAG_FILENAME_TRUNCATED != 0,
+        "event_type": "process_start",
+        "timestamp_ns": start.timestamp_ns,
+        "pid": start.pid,
+        "tid": start.tid,
+        "ppid": start.ppid,
+        "uid": start.uid,
+        "gid": start.gid,
+        "comm": start.comm,
+        "exe_path": start.exe_path,
+        "source": start.source,
+        "filename_truncated": start.filename_truncated,
     })
     .to_string()
 }
 
-pub fn format_process_fork_event_json(event: &ProcessForkEvent) -> String {
-    let parent_comm = fixed_string(&event.parent_comm, event.parent_comm.len());
-    let child_comm = fixed_string(&event.child_comm, event.child_comm.len());
-
-    serde_json::json!({
-        "event_type": "process_fork",
-        "schema_version": event.header.version,
-        "timestamp_ns": event.header.timestamp_ns,
-        "parent_pid": event.parent_pid,
-        "parent_comm": parent_comm,
-        "child_pid": event.child_pid,
-        "child_tid": event.child_tid,
-        "child_comm": child_comm,
-        "uid": event.header.uid,
-        "gid": event.header.gid,
-    })
-    .to_string()
-}
-
-pub fn format_process_exit_event_json(event: &ProcessExitEvent) -> String {
-    let comm = fixed_string(&event.comm, event.comm.len());
-
+fn format_process_exit_json(exit: &ProcessExit) -> String {
     serde_json::json!({
         "event_type": "process_exit",
-        "schema_version": event.header.version,
-        "timestamp_ns": event.header.timestamp_ns,
-        "pid": event.header.pid,
-        "tid": event.header.tid,
-        "comm": comm,
-        "group_dead": event.group_dead != 0,
-        "uid": event.header.uid,
-        "gid": event.header.gid,
+        "timestamp_ns": exit.timestamp_ns,
+        "pid": exit.pid,
+        "tid": exit.tid,
+        "comm": exit.comm,
+        "group_dead": exit.group_dead,
+        "uid": exit.uid,
+        "gid": exit.gid,
     })
     .to_string()
 }
 
-pub fn format_exec_syscall_event_json(event: &ExecSyscallEvent) -> String {
-    let filename_len = usize::from(event.filename_len).min(event.filename.len());
-    let filename = fixed_string(&event.filename, filename_len);
-    let source = match event.source {
-        s if s == ExecSource::Execve as u8 => "execve",
-        s if s == ExecSource::Execveat as u8 => "execveat",
-        _ => "unknown",
-    };
-
+fn format_process_relationship_json(rel: &ProcessRelationship) -> String {
     serde_json::json!({
-        "event_type": "exec_syscall",
-        "schema_version": event.header.version,
-        "timestamp_ns": event.header.timestamp_ns,
-        "pid": event.header.pid,
-        "tid": event.header.tid,
-        "uid": event.header.uid,
-        "gid": event.header.gid,
-        "filename": filename,
-        "filename_truncated": event.header.flags & EVENT_FLAG_FILENAME_TRUNCATED != 0,
-        "source": source,
+        "event_type": "process_relationship",
+        "timestamp_ns": rel.timestamp_ns,
+        "parent_pid": rel.parent_pid,
+        "parent_comm": rel.parent_comm,
+        "child_pid": rel.child_pid,
+        "child_tid": rel.child_tid,
+        "child_comm": rel.child_comm,
+        "uid": rel.uid,
+        "gid": rel.gid,
     })
     .to_string()
-}
-
-fn fixed_string(bytes: &[u8], max_len: usize) -> String {
-    let len = bytes[..max_len]
-        .iter()
-        .position(|byte| *byte == 0)
-        .unwrap_or(max_len);
-
-    String::from_utf8_lossy(&bytes[..len]).into_owned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use edr_common::{EVENT_SCHEMA_VERSION, EventKind};
 
     #[test]
-    fn formats_process_exec_event_as_json() {
-        let event = sample_process_exec_event();
+    fn formats_process_start_as_json() {
+        let event = sample_process_start();
 
-        let value: serde_json::Value =
-            serde_json::from_str(&format_process_exec_event_json(&event))
-                .expect("process exec event output should be valid JSON");
+        let value: serde_json::Value = serde_json::from_str(&format_normalized_event_json(
+            &NormalizedEvent::ProcessStart(event.clone()),
+        ))
+        .expect("process start event output should be valid JSON");
 
-        assert_eq!(value["event_type"], "process_exec");
-        assert_eq!(value["schema_version"], EVENT_SCHEMA_VERSION);
+        assert_eq!(value["event_type"], "process_start");
         assert_eq!(value["timestamp_ns"], 123);
         assert_eq!(value["pid"], 100);
         assert_eq!(value["tid"], 101);
@@ -159,55 +105,103 @@ mod tests {
         assert_eq!(value["uid"], 1000);
         assert_eq!(value["gid"], 1000);
         assert_eq!(value["comm"], "bash");
-        assert_eq!(value["filename"], "/usr/bin/bash");
+        assert_eq!(value["exe_path"], "/usr/bin/bash");
+        assert_eq!(value["source"], "execve");
         assert_eq!(value["filename_truncated"], true);
     }
 
     #[test]
     fn writes_json_line_to_writer() {
-        let event = sample_process_exec_event();
+        let event = sample_process_start();
         let mut output = JsonOutput::new(Vec::new());
 
         output
-            .write_process_exec(&event)
+            .write_normalized(&NormalizedEvent::ProcessStart(event))
             .expect("JSON event write should succeed");
 
         let line = String::from_utf8(output.into_inner()).expect("JSON output should be UTF-8");
         assert!(line.ends_with('\n'));
 
         let value: serde_json::Value = serde_json::from_str(line.trim_end())
-            .expect("written process exec event should be valid JSON");
-        assert_eq!(value["event_type"], "process_exec");
-        assert_eq!(value["filename"], "/usr/bin/bash");
+            .expect("written process start event should be valid JSON");
+        assert_eq!(value["event_type"], "process_start");
+        assert_eq!(value["exe_path"], "/usr/bin/bash");
     }
 
     #[test]
-    fn caps_filename_len_to_buffer_size() {
-        let mut event = sample_process_exec_event();
-        event.filename_len = u16::MAX;
+    fn formats_process_exit_as_json() {
+        let event = ProcessExit {
+            pid: 42,
+            tid: 42,
+            comm: "sh".to_string(),
+            group_dead: true,
+            uid: 1000,
+            gid: 1000,
+            timestamp_ns: 3000,
+        };
 
-        let value: serde_json::Value =
-            serde_json::from_str(&format_process_exec_event_json(&event))
-                .expect("process exec event output should be valid JSON");
+        let value: serde_json::Value = serde_json::from_str(&format_normalized_event_json(
+            &NormalizedEvent::ProcessExit(event),
+        ))
+        .expect("process exit event output should be valid JSON");
 
-        assert_eq!(value["filename"], "/usr/bin/bash");
+        assert_eq!(value["event_type"], "process_exit");
+        assert_eq!(value["pid"], 42);
+        assert_eq!(value["comm"], "sh");
+        assert_eq!(value["group_dead"], true);
     }
 
-    fn sample_process_exec_event() -> ProcessExecEvent {
-        let mut event = ProcessExecEvent::default();
-        event.header.kind = EventKind::ProcessExec.as_u16();
-        event.header.version = EVENT_SCHEMA_VERSION;
-        event.header.size = ProcessExecEvent::SIZE;
-        event.header.flags = EVENT_FLAG_FILENAME_TRUNCATED;
-        event.header.timestamp_ns = 123;
-        event.header.pid = 100;
-        event.header.tid = 101;
-        event.header.ppid = 1;
-        event.header.uid = 1000;
-        event.header.gid = 1000;
-        event.comm[..4].copy_from_slice(b"bash");
-        event.filename[..13].copy_from_slice(b"/usr/bin/bash");
-        event.filename_len = 13;
-        event
+    #[test]
+    fn formats_process_relationship_as_json() {
+        let event = ProcessRelationship {
+            parent_pid: 1,
+            parent_comm: "bash".to_string(),
+            child_pid: 100,
+            child_tid: 100,
+            child_comm: "cat".to_string(),
+            uid: 1000,
+            gid: 1000,
+            timestamp_ns: 2000,
+        };
+
+        let value: serde_json::Value = serde_json::from_str(&format_normalized_event_json(
+            &NormalizedEvent::ProcessRelationship(event),
+        ))
+        .expect("process relationship event output should be valid JSON");
+
+        assert_eq!(value["event_type"], "process_relationship");
+        assert_eq!(value["parent_pid"], 1);
+        assert_eq!(value["parent_comm"], "bash");
+        assert_eq!(value["child_pid"], 100);
+        assert_eq!(value["child_tid"], 100);
+        assert_eq!(value["child_comm"], "cat");
+    }
+
+    #[test]
+    fn source_field_is_null_when_none() {
+        let mut event = sample_process_start();
+        event.source = None;
+
+        let value: serde_json::Value = serde_json::from_str(&format_normalized_event_json(
+            &NormalizedEvent::ProcessStart(event),
+        ))
+        .expect("process start event output should be valid JSON");
+
+        assert!(value["source"].is_null());
+    }
+
+    fn sample_process_start() -> ProcessStart {
+        ProcessStart {
+            pid: 100,
+            tid: 101,
+            ppid: 1,
+            uid: 1000,
+            gid: 1000,
+            comm: "bash".to_string(),
+            exe_path: "/usr/bin/bash".to_string(),
+            source: Some("execve".to_string()),
+            timestamp_ns: 123,
+            filename_truncated: true,
+        }
     }
 }

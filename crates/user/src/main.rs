@@ -1,7 +1,9 @@
 mod config;
 mod logging;
+mod normalize;
 mod output;
 mod privilege;
+mod process_table;
 
 use anyhow::Context;
 use aya::{maps::ring_buf::RingBuf, programs::TracePoint};
@@ -13,6 +15,9 @@ use tokio::io::unix::AsyncFd;
 use tokio::signal;
 use tokio::time::{Duration, sleep};
 use tracing::{info, warn};
+
+use crate::normalize::NormalizedEvent;
+use crate::process_table::ProcessTable;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -81,6 +86,7 @@ async fn main() -> anyhow::Result<()> {
     let ring_buf = RingBuf::try_from(ebpf.map_mut("EVENTS").context("EVENTS map not found")?)?;
     let mut async_ring = AsyncFd::new(ring_buf)?;
     let mut output = output::JsonOutput::stdout();
+    let mut table = ProcessTable::new();
 
     info!(
         agent = %config.agent.id,
@@ -109,7 +115,7 @@ async fn main() -> anyhow::Result<()> {
                         continue;
                     }
 
-                    match header.kind {
+                    let normalized = match header.kind {
                         k if k == EventKind::ProcessExec.as_u16() => {
                             if bytes.len() >= core::mem::size_of::<ProcessExecEvent>()
                                 && header.size as usize == core::mem::size_of::<ProcessExecEvent>()
@@ -117,10 +123,9 @@ async fn main() -> anyhow::Result<()> {
                                 let event = unsafe {
                                     core::ptr::read_unaligned(bytes.as_ptr() as *const ProcessExecEvent)
                                 };
-                                output.write_process_exec(&event)?;
-                                if ci_smoke {
-                                    return Ok(());
-                                }
+                                Some(crate::normalize::normalize_exec(&event, &mut table))
+                            } else {
+                                None
                             }
                         }
                         k if k == EventKind::ProcessFork.as_u16() => {
@@ -130,7 +135,9 @@ async fn main() -> anyhow::Result<()> {
                                 let event = unsafe {
                                     core::ptr::read_unaligned(bytes.as_ptr() as *const ProcessForkEvent)
                                 };
-                                output.write_process_fork(&event)?;
+                                Some(crate::normalize::normalize_fork(&event, &mut table))
+                            } else {
+                                None
                             }
                         }
                         k if k == EventKind::ProcessExit.as_u16() => {
@@ -140,7 +147,9 @@ async fn main() -> anyhow::Result<()> {
                                 let event = unsafe {
                                     core::ptr::read_unaligned(bytes.as_ptr() as *const ProcessExitEvent)
                                 };
-                                output.write_process_exit(&event)?;
+                                Some(crate::normalize::normalize_exit(&event, &mut table))
+                            } else {
+                                None
                             }
                         }
                         k if k == EventKind::ExecSyscall.as_u16() => {
@@ -150,10 +159,18 @@ async fn main() -> anyhow::Result<()> {
                                 let event = unsafe {
                                     core::ptr::read_unaligned(bytes.as_ptr() as *const ExecSyscallEvent)
                                 };
-                                output.write_exec_syscall(&event)?;
+                                crate::normalize::normalize_exec_syscall(&event, &mut table);
                             }
+                            None
                         }
-                        _ => {}
+                        _ => None,
+                    };
+
+                    if let Some(event) = normalized {
+                        output.write_normalized(&event)?;
+                        if ci_smoke && matches!(event, NormalizedEvent::ProcessStart(_)) {
+                            return Ok(());
+                        }
                     }
                 }
                 guard.clear_ready();
