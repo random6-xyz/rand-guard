@@ -166,12 +166,12 @@ fn validate_ci_smoke_output(stdout: &[u8]) -> anyhow::Result<()> {
         bail!("CI smoke process_start event was missing exe_path: {start}");
     }
 
-    let has_rel_or_exit = events.iter().any(|event| {
-        event["event_type"] == "process_relationship" || event["event_type"] == "process_exit"
-    });
+    let has_relationship = events
+        .iter()
+        .any(|event| event["event_type"] == "process_relationship");
 
-    if !has_rel_or_exit {
-        bail!("CI smoke did not emit a process_relationship or process_exit event");
+    if !has_relationship {
+        bail!("CI smoke did not emit a process_relationship event");
     }
 
     Ok(())

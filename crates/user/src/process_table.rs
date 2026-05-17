@@ -26,12 +26,14 @@ pub struct ProcessRecord {
 /// Simple userspace process table keyed by `(pid, tid)`.
 pub struct ProcessTable {
     records: HashMap<(u32, u32), ProcessRecord>,
+    pending_exec_sources: HashMap<(u32, u32), String>,
 }
 
 impl ProcessTable {
     pub fn new() -> Self {
         Self {
             records: HashMap::new(),
+            pending_exec_sources: HashMap::new(),
         }
     }
 
@@ -61,6 +63,7 @@ impl ProcessTable {
                 pending_source: existing.pending_source,
             }
         } else {
+            let pending_source = self.pending_exec_sources.remove(&key);
             ProcessRecord {
                 pid: event.header.pid,
                 tid: event.header.tid,
@@ -73,7 +76,7 @@ impl ProcessTable {
                 last_seen: event.header.timestamp_ns,
                 exit_timestamp: None,
                 exited: false,
-                pending_source: None,
+                pending_source,
             }
         };
 
@@ -138,6 +141,8 @@ impl ProcessTable {
 
         if let Some(record) = self.records.get_mut(&key) {
             record.pending_source = Some(source.to_string());
+        } else {
+            self.pending_exec_sources.insert(key, source.to_string());
         }
     }
 
@@ -301,6 +306,19 @@ mod tests {
         let record = table.update_from_exec(&exec2);
         assert_eq!(record.pending_source, Some("execveat".to_string()));
         // After consumption the stored record should have None
+        assert!(table.get(&(42, 42)).unwrap().pending_source.is_none());
+    }
+
+    #[test]
+    fn pending_source_correlates_when_exec_record_does_not_exist_yet() {
+        let mut table = ProcessTable::new();
+        let syscall = make_exec_syscall_event(42, 42, ExecSource::Execveat);
+        table.set_pending_source(&syscall);
+
+        let exec = make_exec_event(42, 42, 0, "/bin/bash", "bash");
+        let record = table.update_from_exec(&exec);
+
+        assert_eq!(record.pending_source, Some("execveat".to_string()));
         assert!(table.get(&(42, 42)).unwrap().pending_source.is_none());
     }
 
