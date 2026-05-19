@@ -4,7 +4,7 @@
 use aya_ebpf::{
     helpers::{
         bpf_get_current_comm, bpf_get_current_pid_tgid, bpf_get_current_uid_gid,
-        bpf_probe_read_user_str_bytes, r#gen,
+        bpf_probe_read_user, bpf_probe_read_user_str_bytes, r#gen,
     },
     macros::{map, tracepoint},
     maps::ring_buf::RingBuf,
@@ -437,7 +437,7 @@ fn try_sys_enter_openat2(ctx: TracePointContext) -> Result<u32, i64> {
     let how_ptr = unsafe { ctx.read_at::<u64>(32)? } as *const u64;
 
     let flags = if !how_ptr.is_null() {
-        unsafe { core::ptr::read_volatile(how_ptr) }
+        unsafe { bpf_probe_read_user::<u64>(how_ptr) }.unwrap_or(0)
     } else {
         0
     };
