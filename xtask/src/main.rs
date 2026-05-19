@@ -118,8 +118,7 @@ fn run_user(debug: bool, ci_smoke: bool) -> anyhow::Result<()> {
             .spawn()?;
 
         let smoke_config = std::env::temp_dir().join("edr_ci_smoke_config.toml");
-        let smoke_config_contents = r#"
-[agent]
+        let smoke_config_contents = r#"[agent]
 id = "ci-smoke"
 mode = "monitor"
 log_level = "warn"
@@ -160,6 +159,9 @@ enabled = false
 type = "process"
 severity = "low"
 action = "alert"
+
+[detections]
+persistence = []
 
 [output]
 type = "stdout"
