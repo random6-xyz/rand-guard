@@ -141,6 +141,7 @@ pub struct FileConfig {
     pub enabled: bool,
     pub hooks: Vec<String>,
     pub watch_paths: Vec<String>,
+    pub watch_patterns: Vec<String>,
     pub exclude_paths: Vec<String>,
 }
 

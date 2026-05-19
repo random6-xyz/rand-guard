@@ -1,7 +1,11 @@
 use edr_common::{
-    EVENT_FLAG_FILENAME_TRUNCATED, ExecSyscallEvent, FileOpenEvent, ProcessExecEvent,
-    ProcessExitEvent, ProcessForkEvent,
+    EVENT_FLAG_FILENAME_TRUNCATED, ExecSyscallEvent, FileOpenAt2Event, FileOpenEvent,
+    FilePWrite64Event, FileRenameAt2Event, FileRenameAtEvent, FileRenameEvent, FileUnlinkAtEvent,
+    FileUnlinkEvent, FileWriteEvent, FileWriteVEvent, ProcessExecEvent, ProcessExitEvent,
+    ProcessForkEvent,
 };
+
+use crate::config::FileConfig;
 
 use crate::process_table::{ProcessTable, fixed_string};
 
@@ -14,6 +18,15 @@ pub enum NormalizedEvent {
     ProcessExit(ProcessExit),
     ProcessRelationship(ProcessRelationship),
     FileOpen(FileOpen),
+    FileOpenAt2(FileOpenAt2),
+    FileWrite(FileWrite),
+    FileWriteV(FileWriteV),
+    FilePWrite64(FilePWrite64),
+    FileRename(FileRename),
+    FileRenameAt(FileRenameAt),
+    FileRenameAt2(FileRenameAt2),
+    FileUnlink(FileUnlink),
+    FileUnlinkAt(FileUnlinkAt),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,6 +70,142 @@ pub struct ProcessRelationship {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileOpen {
+    pub pid: u32,
+    pub tid: u32,
+    pub ppid: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub comm: String,
+    pub exe_path: String,
+    pub filename: String,
+    pub flags: u32,
+    pub filename_truncated: bool,
+    pub timestamp_ns: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileOpenAt2 {
+    pub pid: u32,
+    pub tid: u32,
+    pub ppid: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub comm: String,
+    pub exe_path: String,
+    pub filename: String,
+    pub flags: u64,
+    pub filename_truncated: bool,
+    pub timestamp_ns: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileWrite {
+    pub pid: u32,
+    pub tid: u32,
+    pub ppid: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub comm: String,
+    pub exe_path: String,
+    pub fd: u64,
+    pub count: u64,
+    pub resolved_path: String,
+    pub timestamp_ns: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileWriteV {
+    pub pid: u32,
+    pub tid: u32,
+    pub ppid: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub comm: String,
+    pub exe_path: String,
+    pub fd: u64,
+    pub iovcnt: u64,
+    pub resolved_path: String,
+    pub timestamp_ns: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FilePWrite64 {
+    pub pid: u32,
+    pub tid: u32,
+    pub ppid: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub comm: String,
+    pub exe_path: String,
+    pub fd: u64,
+    pub count: u64,
+    pub pos: u64,
+    pub resolved_path: String,
+    pub timestamp_ns: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileRename {
+    pub pid: u32,
+    pub tid: u32,
+    pub ppid: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub comm: String,
+    pub exe_path: String,
+    pub old_filename: String,
+    pub new_filename: String,
+    pub filename_truncated: bool,
+    pub timestamp_ns: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileRenameAt {
+    pub pid: u32,
+    pub tid: u32,
+    pub ppid: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub comm: String,
+    pub exe_path: String,
+    pub old_filename: String,
+    pub new_filename: String,
+    pub filename_truncated: bool,
+    pub timestamp_ns: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileRenameAt2 {
+    pub pid: u32,
+    pub tid: u32,
+    pub ppid: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub comm: String,
+    pub exe_path: String,
+    pub old_filename: String,
+    pub new_filename: String,
+    pub flags: u32,
+    pub filename_truncated: bool,
+    pub timestamp_ns: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileUnlink {
+    pub pid: u32,
+    pub tid: u32,
+    pub ppid: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub comm: String,
+    pub exe_path: String,
+    pub filename: String,
+    pub filename_truncated: bool,
+    pub timestamp_ns: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileUnlinkAt {
     pub pid: u32,
     pub tid: u32,
     pub ppid: u32,
@@ -144,19 +293,76 @@ pub fn normalize_exec_syscall(event: &ExecSyscallEvent, table: &mut ProcessTable
     table.set_pending_source(event);
 }
 
+/// Resolve a file descriptor to a path via `/proc/<pid>/fd/<fd>`.
+fn resolve_fd_path(pid: u32, fd: u64) -> String {
+    let path = format!("/proc/{pid}/fd/{fd}");
+    std::fs::read_link(&path)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// Check whether a filename passes the configured watch/exclude filters.
+///
+/// * If `watch_paths` or `watch_patterns` are non-empty, the filename must
+///   match at least one prefix **or** one pattern.
+/// * If `exclude_paths` are non-empty, the filename must not match any
+///   exclude prefix.
+fn passes_file_filter(filename: &str, config: &FileConfig) -> bool {
+    let has_watch = !config.watch_paths.is_empty() || !config.watch_patterns.is_empty();
+    if has_watch {
+        let matches_prefix = config.watch_paths.iter().any(|p| filename.starts_with(p));
+        let matches_pattern = config.watch_patterns.iter().any(|pat| {
+            if let Some(suffix) = pat.strip_prefix("*.") {
+                filename.ends_with(suffix)
+            } else {
+                filename.contains(pat.as_str())
+            }
+        });
+        if !matches_prefix && !matches_pattern {
+            return false;
+        }
+    }
+
+    if config.exclude_paths.iter().any(|p| filename.starts_with(p)) {
+        return false;
+    }
+
+    true
+}
+
+fn passes_file_filter_opt(filename: &str, file_config: Option<&FileConfig>) -> bool {
+    let Some(config) = file_config else {
+        return true;
+    };
+    passes_file_filter(filename, config)
+}
+
+fn enrich_from_table(
+    header: &edr_common::EventHeader,
+    table: &ProcessTable,
+) -> (String, String, u32) {
+    if let Some(record) = table.get(&(header.pid, header.tid)) {
+        (record.comm.clone(), record.exe_path.clone(), record.ppid)
+    } else {
+        (String::new(), String::new(), 0)
+    }
+}
+
 /// Convert a raw `sys_enter_openat` record into a normalized `FileOpen`.
-pub fn normalize_file_open(event: &FileOpenEvent, table: &mut ProcessTable) -> NormalizedEvent {
+pub fn normalize_file_open(
+    event: &FileOpenEvent,
+    table: &mut ProcessTable,
+    file_config: Option<&FileConfig>,
+) -> Option<NormalizedEvent> {
     let filename = fixed_string(&event.filename, event.filename.len());
+    if !passes_file_filter_opt(&filename, file_config) {
+        return None;
+    }
+
     let filename_truncated = event.header.flags & EVENT_FLAG_FILENAME_TRUNCATED != 0;
+    let (comm, exe_path, ppid) = enrich_from_table(&event.header, table);
 
-    let (comm, exe_path, ppid) =
-        if let Some(record) = table.get(&(event.header.pid, event.header.tid)) {
-            (record.comm.clone(), record.exe_path.clone(), record.ppid)
-        } else {
-            (String::new(), String::new(), 0)
-        };
-
-    NormalizedEvent::FileOpen(FileOpen {
+    Some(NormalizedEvent::FileOpen(FileOpen {
         pid: event.header.pid,
         tid: event.header.tid,
         ppid,
@@ -168,7 +374,275 @@ pub fn normalize_file_open(event: &FileOpenEvent, table: &mut ProcessTable) -> N
         flags: event.flags,
         filename_truncated,
         timestamp_ns: event.header.timestamp_ns,
-    })
+    }))
+}
+
+/// Convert a raw `sys_enter_openat2` record into a normalized `FileOpenAt2`.
+pub fn normalize_file_openat2(
+    event: &FileOpenAt2Event,
+    table: &mut ProcessTable,
+    file_config: Option<&FileConfig>,
+) -> Option<NormalizedEvent> {
+    let filename = fixed_string(&event.filename, event.filename.len());
+    if !passes_file_filter_opt(&filename, file_config) {
+        return None;
+    }
+
+    let filename_truncated = event.header.flags & EVENT_FLAG_FILENAME_TRUNCATED != 0;
+    let (comm, exe_path, ppid) = enrich_from_table(&event.header, table);
+
+    Some(NormalizedEvent::FileOpenAt2(FileOpenAt2 {
+        pid: event.header.pid,
+        tid: event.header.tid,
+        ppid,
+        uid: event.header.uid,
+        gid: event.header.gid,
+        comm,
+        exe_path,
+        filename,
+        flags: event.flags,
+        filename_truncated,
+        timestamp_ns: event.header.timestamp_ns,
+    }))
+}
+
+/// Convert a raw `sys_enter_write` record into a normalized `FileWrite`.
+pub fn normalize_file_write(
+    event: &FileWriteEvent,
+    table: &mut ProcessTable,
+    file_config: Option<&FileConfig>,
+) -> Option<NormalizedEvent> {
+    let resolved_path = resolve_fd_path(event.header.pid, event.fd);
+    if !passes_file_filter_opt(&resolved_path, file_config) {
+        return None;
+    }
+
+    let (comm, exe_path, ppid) = enrich_from_table(&event.header, table);
+
+    Some(NormalizedEvent::FileWrite(FileWrite {
+        pid: event.header.pid,
+        tid: event.header.tid,
+        ppid,
+        uid: event.header.uid,
+        gid: event.header.gid,
+        comm,
+        exe_path,
+        fd: event.fd,
+        count: event.count,
+        resolved_path,
+        timestamp_ns: event.header.timestamp_ns,
+    }))
+}
+
+/// Convert a raw `sys_enter_writev` record into a normalized `FileWriteV`.
+pub fn normalize_file_writev(
+    event: &FileWriteVEvent,
+    table: &mut ProcessTable,
+    file_config: Option<&FileConfig>,
+) -> Option<NormalizedEvent> {
+    let resolved_path = resolve_fd_path(event.header.pid, event.fd);
+    if !passes_file_filter_opt(&resolved_path, file_config) {
+        return None;
+    }
+
+    let (comm, exe_path, ppid) = enrich_from_table(&event.header, table);
+
+    Some(NormalizedEvent::FileWriteV(FileWriteV {
+        pid: event.header.pid,
+        tid: event.header.tid,
+        ppid,
+        uid: event.header.uid,
+        gid: event.header.gid,
+        comm,
+        exe_path,
+        fd: event.fd,
+        iovcnt: event.iovcnt,
+        resolved_path,
+        timestamp_ns: event.header.timestamp_ns,
+    }))
+}
+
+/// Convert a raw `sys_enter_pwrite64` record into a normalized `FilePWrite64`.
+pub fn normalize_file_pwrite64(
+    event: &FilePWrite64Event,
+    table: &mut ProcessTable,
+    file_config: Option<&FileConfig>,
+) -> Option<NormalizedEvent> {
+    let resolved_path = resolve_fd_path(event.header.pid, event.fd);
+    if !passes_file_filter_opt(&resolved_path, file_config) {
+        return None;
+    }
+
+    let (comm, exe_path, ppid) = enrich_from_table(&event.header, table);
+
+    Some(NormalizedEvent::FilePWrite64(FilePWrite64 {
+        pid: event.header.pid,
+        tid: event.header.tid,
+        ppid,
+        uid: event.header.uid,
+        gid: event.header.gid,
+        comm,
+        exe_path,
+        fd: event.fd,
+        count: event.count,
+        pos: event.pos,
+        resolved_path,
+        timestamp_ns: event.header.timestamp_ns,
+    }))
+}
+
+/// Convert a raw `sys_enter_rename` record into a normalized `FileRename`.
+pub fn normalize_file_rename(
+    event: &FileRenameEvent,
+    table: &mut ProcessTable,
+    file_config: Option<&FileConfig>,
+) -> Option<NormalizedEvent> {
+    let old_filename = fixed_string(&event.old_filename, event.old_filename.len());
+    let new_filename = fixed_string(&event.new_filename, event.new_filename.len());
+    if !passes_file_filter_opt(&old_filename, file_config)
+        && !passes_file_filter_opt(&new_filename, file_config)
+    {
+        return None;
+    }
+
+    let filename_truncated = event.header.flags & EVENT_FLAG_FILENAME_TRUNCATED != 0;
+    let (comm, exe_path, ppid) = enrich_from_table(&event.header, table);
+
+    Some(NormalizedEvent::FileRename(FileRename {
+        pid: event.header.pid,
+        tid: event.header.tid,
+        ppid,
+        uid: event.header.uid,
+        gid: event.header.gid,
+        comm,
+        exe_path,
+        old_filename,
+        new_filename,
+        filename_truncated,
+        timestamp_ns: event.header.timestamp_ns,
+    }))
+}
+
+/// Convert a raw `sys_enter_renameat` record into a normalized `FileRenameAt`.
+pub fn normalize_file_renameat(
+    event: &FileRenameAtEvent,
+    table: &mut ProcessTable,
+    file_config: Option<&FileConfig>,
+) -> Option<NormalizedEvent> {
+    let old_filename = fixed_string(&event.old_filename, event.old_filename.len());
+    let new_filename = fixed_string(&event.new_filename, event.new_filename.len());
+    if !passes_file_filter_opt(&old_filename, file_config)
+        && !passes_file_filter_opt(&new_filename, file_config)
+    {
+        return None;
+    }
+
+    let filename_truncated = event.header.flags & EVENT_FLAG_FILENAME_TRUNCATED != 0;
+    let (comm, exe_path, ppid) = enrich_from_table(&event.header, table);
+
+    Some(NormalizedEvent::FileRenameAt(FileRenameAt {
+        pid: event.header.pid,
+        tid: event.header.tid,
+        ppid,
+        uid: event.header.uid,
+        gid: event.header.gid,
+        comm,
+        exe_path,
+        old_filename,
+        new_filename,
+        filename_truncated,
+        timestamp_ns: event.header.timestamp_ns,
+    }))
+}
+
+/// Convert a raw `sys_enter_renameat2` record into a normalized `FileRenameAt2`.
+pub fn normalize_file_renameat2(
+    event: &FileRenameAt2Event,
+    table: &mut ProcessTable,
+    file_config: Option<&FileConfig>,
+) -> Option<NormalizedEvent> {
+    let old_filename = fixed_string(&event.old_filename, event.old_filename.len());
+    let new_filename = fixed_string(&event.new_filename, event.new_filename.len());
+    if !passes_file_filter_opt(&old_filename, file_config)
+        && !passes_file_filter_opt(&new_filename, file_config)
+    {
+        return None;
+    }
+
+    let filename_truncated = event.header.flags & EVENT_FLAG_FILENAME_TRUNCATED != 0;
+    let (comm, exe_path, ppid) = enrich_from_table(&event.header, table);
+
+    Some(NormalizedEvent::FileRenameAt2(FileRenameAt2 {
+        pid: event.header.pid,
+        tid: event.header.tid,
+        ppid,
+        uid: event.header.uid,
+        gid: event.header.gid,
+        comm,
+        exe_path,
+        old_filename,
+        new_filename,
+        flags: event.flags,
+        filename_truncated,
+        timestamp_ns: event.header.timestamp_ns,
+    }))
+}
+
+/// Convert a raw `sys_enter_unlink` record into a normalized `FileUnlink`.
+pub fn normalize_file_unlink(
+    event: &FileUnlinkEvent,
+    table: &mut ProcessTable,
+    file_config: Option<&FileConfig>,
+) -> Option<NormalizedEvent> {
+    let filename = fixed_string(&event.filename, event.filename.len());
+    if !passes_file_filter_opt(&filename, file_config) {
+        return None;
+    }
+
+    let filename_truncated = event.header.flags & EVENT_FLAG_FILENAME_TRUNCATED != 0;
+    let (comm, exe_path, ppid) = enrich_from_table(&event.header, table);
+
+    Some(NormalizedEvent::FileUnlink(FileUnlink {
+        pid: event.header.pid,
+        tid: event.header.tid,
+        ppid,
+        uid: event.header.uid,
+        gid: event.header.gid,
+        comm,
+        exe_path,
+        filename,
+        filename_truncated,
+        timestamp_ns: event.header.timestamp_ns,
+    }))
+}
+
+/// Convert a raw `sys_enter_unlinkat` record into a normalized `FileUnlinkAt`.
+pub fn normalize_file_unlinkat(
+    event: &FileUnlinkAtEvent,
+    table: &mut ProcessTable,
+    file_config: Option<&FileConfig>,
+) -> Option<NormalizedEvent> {
+    let filename = fixed_string(&event.filename, event.filename.len());
+    if !passes_file_filter_opt(&filename, file_config) {
+        return None;
+    }
+
+    let filename_truncated = event.header.flags & EVENT_FLAG_FILENAME_TRUNCATED != 0;
+    let (comm, exe_path, ppid) = enrich_from_table(&event.header, table);
+
+    Some(NormalizedEvent::FileUnlinkAt(FileUnlinkAt {
+        pid: event.header.pid,
+        tid: event.header.tid,
+        ppid,
+        uid: event.header.uid,
+        gid: event.header.gid,
+        comm,
+        exe_path,
+        filename,
+        flags: event.flags,
+        filename_truncated,
+        timestamp_ns: event.header.timestamp_ns,
+    }))
 }
 
 #[cfg(test)]

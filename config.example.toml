@@ -21,8 +21,9 @@ collect_cwd = false
 
 [file]
 enabled = true
-hooks = ["openat", "unlink", "rename"]
+hooks = ["openat", "openat2", "write", "rename", "renameat2", "unlink", "unlinkat"]
 watch_paths = ["/etc", "/usr/bin", "/bin"]
+watch_patterns = ["*.service"]
 exclude_paths = ["/var/log", "/tmp", "/proc", "/sys"]
 
 [network]

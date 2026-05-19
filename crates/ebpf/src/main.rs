@@ -12,7 +12,9 @@ use aya_ebpf::{
 };
 use edr_common::{
     EVENT_FLAG_FILENAME_TRUNCATED, EVENT_SCHEMA_VERSION, EventKind, ExecSource, ExecSyscallEvent,
-    FileOpenEvent, PATH_LEN, ProcessExecEvent, ProcessExitEvent, ProcessForkEvent,
+    FileOpenAt2Event, FileOpenEvent, FilePWrite64Event, FileRenameAt2Event, FileRenameEvent,
+    FileUnlinkAtEvent, FileUnlinkEvent, FileWriteEvent, FileWriteVEvent, PATH_LEN,
+    ProcessExecEvent, ProcessExitEvent, ProcessForkEvent,
 };
 
 #[map]
@@ -394,6 +396,557 @@ fn try_sys_enter_openat(ctx: TracePointContext) -> Result<u32, i64> {
             if !filename_user_ptr.is_null() {
                 let buf = &mut (&mut (*ptr).filename)[..];
                 match bpf_probe_read_user_str_bytes(filename_user_ptr, buf) {
+                    Ok(bytes) => {
+                        (*ptr).filename_len = bytes.len() as u16;
+                        if bytes.len() >= PATH_LEN {
+                            (*ptr).header.flags |= EVENT_FLAG_FILENAME_TRUNCATED;
+                        }
+                    }
+                    Err(ret) => {
+                        entry.discard(0);
+                        return Err(ret);
+                    }
+                }
+            }
+        }
+
+        entry.submit(0);
+    }
+
+    Ok(0)
+}
+
+#[tracepoint]
+pub fn sys_enter_openat2(ctx: TracePointContext) -> u32 {
+    try_sys_enter_openat2(ctx).unwrap_or(1)
+}
+
+fn try_sys_enter_openat2(ctx: TracePointContext) -> Result<u32, i64> {
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let uid_gid = bpf_get_current_uid_gid();
+
+    let pid = (pid_tgid >> 32) as u32;
+    let tid = pid_tgid as u32;
+    let gid = (uid_gid >> 32) as u32;
+    let uid = uid_gid as u32;
+
+    // sys_enter_openat2 tracepoint layout:
+    //   offset 24: filename (const char *)
+    //   offset 32: how (struct open_how *)
+    let filename_user_ptr = unsafe { ctx.read_at::<u64>(24)? } as *const u8;
+    let how_ptr = unsafe { ctx.read_at::<u64>(32)? } as *const u64;
+
+    let flags = if !how_ptr.is_null() {
+        unsafe { core::ptr::read_volatile(how_ptr) }
+    } else {
+        0
+    };
+
+    if let Some(mut entry) = EVENTS.reserve::<FileOpenAt2Event>(0) {
+        unsafe {
+            let ptr = entry.as_mut_ptr();
+
+            (*ptr).header.kind = EventKind::FileOpenAt2.as_u16();
+            (*ptr).header.version = EVENT_SCHEMA_VERSION;
+            (*ptr).header.size = FileOpenAt2Event::SIZE;
+            (*ptr).header.flags = 0;
+            (*ptr).header.timestamp_ns = r#gen::bpf_ktime_get_ns();
+            (*ptr).header.pid = pid;
+            (*ptr).header.tid = tid;
+            (*ptr).header.ppid = 0;
+            (*ptr).header.uid = uid;
+            (*ptr).header.gid = gid;
+            (*ptr).header._pad = 0;
+
+            (*ptr).flags = flags;
+            (*ptr)._pad = [0; 6];
+            (*ptr).filename_len = 0;
+
+            for item in (*ptr).filename.iter_mut() {
+                *item = 0;
+            }
+
+            if !filename_user_ptr.is_null() {
+                let buf = &mut (&mut (*ptr).filename)[..];
+                match bpf_probe_read_user_str_bytes(filename_user_ptr, buf) {
+                    Ok(bytes) => {
+                        (*ptr).filename_len = bytes.len() as u16;
+                        if bytes.len() >= PATH_LEN {
+                            (*ptr).header.flags |= EVENT_FLAG_FILENAME_TRUNCATED;
+                        }
+                    }
+                    Err(ret) => {
+                        entry.discard(0);
+                        return Err(ret);
+                    }
+                }
+            }
+        }
+
+        entry.submit(0);
+    }
+
+    Ok(0)
+}
+
+#[tracepoint]
+pub fn sys_enter_write(ctx: TracePointContext) -> u32 {
+    try_sys_enter_write(ctx).unwrap_or(1)
+}
+
+fn try_sys_enter_write(ctx: TracePointContext) -> Result<u32, i64> {
+    try_sys_enter_write_family(ctx, 16, 32, false, false)
+}
+
+#[tracepoint]
+pub fn sys_enter_writev(ctx: TracePointContext) -> u32 {
+    try_sys_enter_writev(ctx).unwrap_or(1)
+}
+
+fn try_sys_enter_writev(ctx: TracePointContext) -> Result<u32, i64> {
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let uid_gid = bpf_get_current_uid_gid();
+
+    let pid = (pid_tgid >> 32) as u32;
+    let tid = pid_tgid as u32;
+    let gid = (uid_gid >> 32) as u32;
+    let uid = uid_gid as u32;
+
+    // sys_enter_writev tracepoint layout:
+    //   offset 16: fd (unsigned int)
+    //   offset 24: vec (const struct iovec *)
+    //   offset 32: vlen (int)
+    let fd = unsafe { ctx.read_at::<u32>(16)? } as u64;
+    let iovcnt = unsafe { ctx.read_at::<i32>(32)? } as u64;
+
+    if let Some(mut entry) = EVENTS.reserve::<FileWriteVEvent>(0) {
+        unsafe {
+            let ptr = entry.as_mut_ptr();
+
+            (*ptr).header.kind = EventKind::FileWriteV.as_u16();
+            (*ptr).header.version = EVENT_SCHEMA_VERSION;
+            (*ptr).header.size = FileWriteVEvent::SIZE;
+            (*ptr).header.flags = 0;
+            (*ptr).header.timestamp_ns = r#gen::bpf_ktime_get_ns();
+            (*ptr).header.pid = pid;
+            (*ptr).header.tid = tid;
+            (*ptr).header.ppid = 0;
+            (*ptr).header.uid = uid;
+            (*ptr).header.gid = gid;
+            (*ptr).header._pad = 0;
+
+            (*ptr).fd = fd;
+            (*ptr).iovcnt = iovcnt;
+        }
+
+        entry.submit(0);
+    }
+
+    Ok(0)
+}
+
+#[tracepoint]
+pub fn sys_enter_pwrite64(ctx: TracePointContext) -> u32 {
+    try_sys_enter_pwrite64(ctx).unwrap_or(1)
+}
+
+fn try_sys_enter_pwrite64(ctx: TracePointContext) -> Result<u32, i64> {
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let uid_gid = bpf_get_current_uid_gid();
+
+    let pid = (pid_tgid >> 32) as u32;
+    let tid = pid_tgid as u32;
+    let gid = (uid_gid >> 32) as u32;
+    let uid = uid_gid as u32;
+
+    // sys_enter_pwrite64 tracepoint layout:
+    //   offset 16: fd (unsigned int)
+    //   offset 24: buf (const char *)
+    //   offset 32: count (size_t)
+    //   offset 40: pos (loff_t)
+    let fd = unsafe { ctx.read_at::<u32>(16)? } as u64;
+    let count = unsafe { ctx.read_at::<u64>(32)? };
+    let pos = unsafe { ctx.read_at::<u64>(40)? };
+
+    if let Some(mut entry) = EVENTS.reserve::<FilePWrite64Event>(0) {
+        unsafe {
+            let ptr = entry.as_mut_ptr();
+
+            (*ptr).header.kind = EventKind::FilePWrite64.as_u16();
+            (*ptr).header.version = EVENT_SCHEMA_VERSION;
+            (*ptr).header.size = FilePWrite64Event::SIZE;
+            (*ptr).header.flags = 0;
+            (*ptr).header.timestamp_ns = r#gen::bpf_ktime_get_ns();
+            (*ptr).header.pid = pid;
+            (*ptr).header.tid = tid;
+            (*ptr).header.ppid = 0;
+            (*ptr).header.uid = uid;
+            (*ptr).header.gid = gid;
+            (*ptr).header._pad = 0;
+
+            (*ptr).fd = fd;
+            (*ptr).count = count;
+            (*ptr).pos = pos;
+        }
+
+        entry.submit(0);
+    }
+
+    Ok(0)
+}
+
+fn try_sys_enter_write_family(
+    ctx: TracePointContext,
+    fd_offset: usize,
+    count_offset: usize,
+    _is_pwrite: bool,
+    _is_writev: bool,
+) -> Result<u32, i64> {
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let uid_gid = bpf_get_current_uid_gid();
+
+    let pid = (pid_tgid >> 32) as u32;
+    let tid = pid_tgid as u32;
+    let gid = (uid_gid >> 32) as u32;
+    let uid = uid_gid as u32;
+
+    let fd = unsafe { ctx.read_at::<u32>(fd_offset)? } as u64;
+    let count = unsafe { ctx.read_at::<u64>(count_offset)? };
+
+    if let Some(mut entry) = EVENTS.reserve::<FileWriteEvent>(0) {
+        unsafe {
+            let ptr = entry.as_mut_ptr();
+
+            (*ptr).header.kind = EventKind::FileWrite.as_u16();
+            (*ptr).header.version = EVENT_SCHEMA_VERSION;
+            (*ptr).header.size = FileWriteEvent::SIZE;
+            (*ptr).header.flags = 0;
+            (*ptr).header.timestamp_ns = r#gen::bpf_ktime_get_ns();
+            (*ptr).header.pid = pid;
+            (*ptr).header.tid = tid;
+            (*ptr).header.ppid = 0;
+            (*ptr).header.uid = uid;
+            (*ptr).header.gid = gid;
+            (*ptr).header._pad = 0;
+
+            (*ptr).fd = fd;
+            (*ptr).count = count;
+        }
+
+        entry.submit(0);
+    }
+
+    Ok(0)
+}
+
+#[tracepoint]
+pub fn sys_enter_rename(ctx: TracePointContext) -> u32 {
+    try_sys_enter_rename(ctx).unwrap_or(1)
+}
+
+fn try_sys_enter_rename(ctx: TracePointContext) -> Result<u32, i64> {
+    try_sys_enter_rename_family(ctx, 16, 24, false, false)
+}
+
+#[tracepoint]
+pub fn sys_enter_renameat(ctx: TracePointContext) -> u32 {
+    try_sys_enter_renameat(ctx).unwrap_or(1)
+}
+
+fn try_sys_enter_renameat(ctx: TracePointContext) -> Result<u32, i64> {
+    try_sys_enter_rename_family(ctx, 24, 40, true, false)
+}
+
+#[tracepoint]
+pub fn sys_enter_renameat2(ctx: TracePointContext) -> u32 {
+    try_sys_enter_renameat2(ctx).unwrap_or(1)
+}
+
+fn try_sys_enter_renameat2(ctx: TracePointContext) -> Result<u32, i64> {
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let uid_gid = bpf_get_current_uid_gid();
+
+    let pid = (pid_tgid >> 32) as u32;
+    let tid = pid_tgid as u32;
+    let gid = (uid_gid >> 32) as u32;
+    let uid = uid_gid as u32;
+
+    // sys_enter_renameat2 tracepoint layout:
+    //   offset 24: oldname (const char *)
+    //   offset 40: newname (const char *)
+    //   offset 48: flags (unsigned int)
+    let oldname_ptr = unsafe { ctx.read_at::<u64>(24)? } as *const u8;
+    let newname_ptr = unsafe { ctx.read_at::<u64>(40)? } as *const u8;
+    let flags = unsafe { ctx.read_at::<u32>(48)? };
+
+    if let Some(mut entry) = EVENTS.reserve::<FileRenameAt2Event>(0) {
+        unsafe {
+            let ptr = entry.as_mut_ptr();
+
+            (*ptr).header.kind = EventKind::FileRenameAt2.as_u16();
+            (*ptr).header.version = EVENT_SCHEMA_VERSION;
+            (*ptr).header.size = FileRenameAt2Event::SIZE;
+            (*ptr).header.flags = 0;
+            (*ptr).header.timestamp_ns = r#gen::bpf_ktime_get_ns();
+            (*ptr).header.pid = pid;
+            (*ptr).header.tid = tid;
+            (*ptr).header.ppid = 0;
+            (*ptr).header.uid = uid;
+            (*ptr).header.gid = gid;
+            (*ptr).header._pad = 0;
+
+            (*ptr).flags = flags;
+            (*ptr)._pad = [0; 4];
+            (*ptr).old_filename_len = 0;
+            (*ptr).new_filename_len = 0;
+
+            for item in (*ptr).old_filename.iter_mut() {
+                *item = 0;
+            }
+            for item in (*ptr).new_filename.iter_mut() {
+                *item = 0;
+            }
+
+            if !oldname_ptr.is_null() {
+                let buf = &mut (&mut (*ptr).old_filename)[..];
+                match bpf_probe_read_user_str_bytes(oldname_ptr, buf) {
+                    Ok(bytes) => {
+                        (*ptr).old_filename_len = bytes.len() as u16;
+                        if bytes.len() >= PATH_LEN {
+                            (*ptr).header.flags |= EVENT_FLAG_FILENAME_TRUNCATED;
+                        }
+                    }
+                    Err(ret) => {
+                        entry.discard(0);
+                        return Err(ret);
+                    }
+                }
+            }
+
+            if !newname_ptr.is_null() {
+                let buf = &mut (&mut (*ptr).new_filename)[..];
+                match bpf_probe_read_user_str_bytes(newname_ptr, buf) {
+                    Ok(bytes) => {
+                        (*ptr).new_filename_len = bytes.len() as u16;
+                        if bytes.len() >= PATH_LEN {
+                            (*ptr).header.flags |= EVENT_FLAG_FILENAME_TRUNCATED;
+                        }
+                    }
+                    Err(ret) => {
+                        entry.discard(0);
+                        return Err(ret);
+                    }
+                }
+            }
+        }
+
+        entry.submit(0);
+    }
+
+    Ok(0)
+}
+
+fn try_sys_enter_rename_family(
+    ctx: TracePointContext,
+    oldname_offset: usize,
+    newname_offset: usize,
+    _has_fd: bool,
+    _is_at2: bool,
+) -> Result<u32, i64> {
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let uid_gid = bpf_get_current_uid_gid();
+
+    let pid = (pid_tgid >> 32) as u32;
+    let tid = pid_tgid as u32;
+    let gid = (uid_gid >> 32) as u32;
+    let uid = uid_gid as u32;
+
+    let oldname_ptr = unsafe { ctx.read_at::<u64>(oldname_offset)? } as *const u8;
+    let newname_ptr = unsafe { ctx.read_at::<u64>(newname_offset)? } as *const u8;
+
+    if let Some(mut entry) = EVENTS.reserve::<FileRenameEvent>(0) {
+        unsafe {
+            let ptr = entry.as_mut_ptr();
+
+            (*ptr).header.kind = EventKind::FileRename.as_u16();
+            (*ptr).header.version = EVENT_SCHEMA_VERSION;
+            (*ptr).header.size = FileRenameEvent::SIZE;
+            (*ptr).header.flags = 0;
+            (*ptr).header.timestamp_ns = r#gen::bpf_ktime_get_ns();
+            (*ptr).header.pid = pid;
+            (*ptr).header.tid = tid;
+            (*ptr).header.ppid = 0;
+            (*ptr).header.uid = uid;
+            (*ptr).header.gid = gid;
+            (*ptr).header._pad = 0;
+
+            (*ptr)._pad = [0; 4];
+            (*ptr).old_filename_len = 0;
+            (*ptr).new_filename_len = 0;
+
+            for item in (*ptr).old_filename.iter_mut() {
+                *item = 0;
+            }
+            for item in (*ptr).new_filename.iter_mut() {
+                *item = 0;
+            }
+
+            if !oldname_ptr.is_null() {
+                let buf = &mut (&mut (*ptr).old_filename)[..];
+                match bpf_probe_read_user_str_bytes(oldname_ptr, buf) {
+                    Ok(bytes) => {
+                        (*ptr).old_filename_len = bytes.len() as u16;
+                        if bytes.len() >= PATH_LEN {
+                            (*ptr).header.flags |= EVENT_FLAG_FILENAME_TRUNCATED;
+                        }
+                    }
+                    Err(ret) => {
+                        entry.discard(0);
+                        return Err(ret);
+                    }
+                }
+            }
+
+            if !newname_ptr.is_null() {
+                let buf = &mut (&mut (*ptr).new_filename)[..];
+                match bpf_probe_read_user_str_bytes(newname_ptr, buf) {
+                    Ok(bytes) => {
+                        (*ptr).new_filename_len = bytes.len() as u16;
+                        if bytes.len() >= PATH_LEN {
+                            (*ptr).header.flags |= EVENT_FLAG_FILENAME_TRUNCATED;
+                        }
+                    }
+                    Err(ret) => {
+                        entry.discard(0);
+                        return Err(ret);
+                    }
+                }
+            }
+        }
+
+        entry.submit(0);
+    }
+
+    Ok(0)
+}
+
+#[tracepoint]
+pub fn sys_enter_unlink(ctx: TracePointContext) -> u32 {
+    try_sys_enter_unlink(ctx).unwrap_or(1)
+}
+
+fn try_sys_enter_unlink(ctx: TracePointContext) -> Result<u32, i64> {
+    try_sys_enter_unlink_family(ctx, 16, false)
+}
+
+#[tracepoint]
+pub fn sys_enter_unlinkat(ctx: TracePointContext) -> u32 {
+    try_sys_enter_unlinkat(ctx).unwrap_or(1)
+}
+
+fn try_sys_enter_unlinkat(ctx: TracePointContext) -> Result<u32, i64> {
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let uid_gid = bpf_get_current_uid_gid();
+
+    let pid = (pid_tgid >> 32) as u32;
+    let tid = pid_tgid as u32;
+    let gid = (uid_gid >> 32) as u32;
+    let uid = uid_gid as u32;
+
+    // sys_enter_unlinkat tracepoint layout:
+    //   offset 24: pathname (const char *)
+    //   offset 32: flag (int)
+    let pathname_ptr = unsafe { ctx.read_at::<u64>(24)? } as *const u8;
+    let flags = unsafe { ctx.read_at::<i32>(32)? } as u32;
+
+    if let Some(mut entry) = EVENTS.reserve::<FileUnlinkAtEvent>(0) {
+        unsafe {
+            let ptr = entry.as_mut_ptr();
+
+            (*ptr).header.kind = EventKind::FileUnlinkAt.as_u16();
+            (*ptr).header.version = EVENT_SCHEMA_VERSION;
+            (*ptr).header.size = FileUnlinkAtEvent::SIZE;
+            (*ptr).header.flags = 0;
+            (*ptr).header.timestamp_ns = r#gen::bpf_ktime_get_ns();
+            (*ptr).header.pid = pid;
+            (*ptr).header.tid = tid;
+            (*ptr).header.ppid = 0;
+            (*ptr).header.uid = uid;
+            (*ptr).header.gid = gid;
+            (*ptr).header._pad = 0;
+
+            (*ptr).flags = flags;
+            (*ptr)._pad = [0; 2];
+            (*ptr).filename_len = 0;
+
+            for item in (*ptr).filename.iter_mut() {
+                *item = 0;
+            }
+
+            if !pathname_ptr.is_null() {
+                let buf = &mut (&mut (*ptr).filename)[..];
+                match bpf_probe_read_user_str_bytes(pathname_ptr, buf) {
+                    Ok(bytes) => {
+                        (*ptr).filename_len = bytes.len() as u16;
+                        if bytes.len() >= PATH_LEN {
+                            (*ptr).header.flags |= EVENT_FLAG_FILENAME_TRUNCATED;
+                        }
+                    }
+                    Err(ret) => {
+                        entry.discard(0);
+                        return Err(ret);
+                    }
+                }
+            }
+        }
+
+        entry.submit(0);
+    }
+
+    Ok(0)
+}
+
+fn try_sys_enter_unlink_family(
+    ctx: TracePointContext,
+    pathname_offset: usize,
+    _has_flags: bool,
+) -> Result<u32, i64> {
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let uid_gid = bpf_get_current_uid_gid();
+
+    let pid = (pid_tgid >> 32) as u32;
+    let tid = pid_tgid as u32;
+    let gid = (uid_gid >> 32) as u32;
+    let uid = uid_gid as u32;
+
+    let pathname_ptr = unsafe { ctx.read_at::<u64>(pathname_offset)? } as *const u8;
+
+    if let Some(mut entry) = EVENTS.reserve::<FileUnlinkEvent>(0) {
+        unsafe {
+            let ptr = entry.as_mut_ptr();
+
+            (*ptr).header.kind = EventKind::FileUnlink.as_u16();
+            (*ptr).header.version = EVENT_SCHEMA_VERSION;
+            (*ptr).header.size = FileUnlinkEvent::SIZE;
+            (*ptr).header.flags = 0;
+            (*ptr).header.timestamp_ns = r#gen::bpf_ktime_get_ns();
+            (*ptr).header.pid = pid;
+            (*ptr).header.tid = tid;
+            (*ptr).header.ppid = 0;
+            (*ptr).header.uid = uid;
+            (*ptr).header.gid = gid;
+            (*ptr).header._pad = 0;
+
+            (*ptr)._pad = [0; 6];
+            (*ptr).filename_len = 0;
+
+            for item in (*ptr).filename.iter_mut() {
+                *item = 0;
+            }
+
+            if !pathname_ptr.is_null() {
+                let buf = &mut (&mut (*ptr).filename)[..];
+                match bpf_probe_read_user_str_bytes(pathname_ptr, buf) {
                     Ok(bytes) => {
                         (*ptr).filename_len = bytes.len() as u16;
                         if bytes.len() >= PATH_LEN {
