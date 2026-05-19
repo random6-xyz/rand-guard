@@ -173,6 +173,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut ci_smoke_start_seen = false;
     let mut ci_smoke_rel_or_exit_seen = false;
+    let mut ci_smoke_file_open_seen = false;
 
     info!(
         agent = %config.agent.id,
@@ -379,9 +380,10 @@ async fn main() -> anyhow::Result<()> {
                                 NormalizedEvent::ProcessStart(_) => ci_smoke_start_seen = true,
                                 NormalizedEvent::ProcessRelationship(_) |
                                 NormalizedEvent::ProcessExit(_) => ci_smoke_rel_or_exit_seen = true,
+                                NormalizedEvent::FileOpen(_) => ci_smoke_file_open_seen = true,
                                 _ => {}
                             }
-                            if ci_smoke_start_seen && ci_smoke_rel_or_exit_seen {
+                            if ci_smoke_start_seen && ci_smoke_rel_or_exit_seen && ci_smoke_file_open_seen {
                                 return Ok(());
                             }
                         }
@@ -389,11 +391,11 @@ async fn main() -> anyhow::Result<()> {
                 }
                 guard.clear_ready();
             },
-            _ = sleep(Duration::from_secs(5)), if ci_smoke => {
-                if ci_smoke_start_seen && ci_smoke_rel_or_exit_seen {
+            _ = sleep(Duration::from_secs(10)), if ci_smoke => {
+                if ci_smoke_start_seen && ci_smoke_rel_or_exit_seen && ci_smoke_file_open_seen {
                     return Ok(());
                 }
-                anyhow::bail!("CI smoke timeout: no ringbuf event received within 5 seconds.");
+                anyhow::bail!("CI smoke timeout: no ringbuf event received within 10 seconds.");
             },
             _ = signal::ctrl_c() => {
                 info!("shutting down");

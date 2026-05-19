@@ -104,7 +104,7 @@ fn run_user(debug: bool, ci_smoke: bool) -> anyhow::Result<()> {
 
         Command::new("timeout")
             .args([
-                "6s",
+                "12s",
                 "bash",
                 "-c",
                 "sleep 0.2; while true; do /bin/true; sleep 0.1; done",
@@ -114,7 +114,7 @@ fn run_user(debug: bool, ci_smoke: bool) -> anyhow::Result<()> {
         // Spawn a short-lived child that touches a file under /tmp so the
         // file_open tracepoint has a chance to fire.
         Command::new("bash")
-            .args(["-c", "sleep 0.3; touch /tmp/edr_ci_smoke_file"])
+            .args(["-c", "sleep 2; touch /tmp/edr_ci_smoke_file"])
             .spawn()?;
 
         let smoke_config = std::env::temp_dir().join("edr_ci_smoke_config.toml");
