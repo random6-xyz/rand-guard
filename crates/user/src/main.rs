@@ -186,7 +186,7 @@ async fn main() -> anyhow::Result<()> {
                 guard.clear_ready();
             },
             _ = sleep(Duration::from_secs(5)), if ci_smoke => {
-                if ci_smoke_start_seen {
+                if ci_smoke_start_seen && ci_smoke_rel_or_exit_seen {
                     return Ok(());
                 }
                 anyhow::bail!("CI smoke timeout: no ringbuf event received within 5 seconds.");
