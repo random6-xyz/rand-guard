@@ -47,7 +47,10 @@ impl ProcessTable {
         let comm = fixed_string(&event.comm, event.comm.len());
         let filename = fixed_string(&event.filename, event.filename.len());
 
-        let mut record = if let Some(existing) = self.records.remove(&key) {
+        let mut record = if let Some(mut existing) = self.records.remove(&key) {
+            if existing.pending_source.is_none() {
+                existing.pending_source = self.pending_exec_sources.remove(&key);
+            }
             ProcessRecord {
                 pid: event.header.pid,
                 tid: event.header.tid,
@@ -119,11 +122,12 @@ impl ProcessTable {
     /// Returns the record if it was known, or `None` for unknown processes.
     pub fn mark_exit(&mut self, event: &ProcessExitEvent) -> Option<ProcessRecord> {
         let key = (event.header.pid, event.header.tid);
-        if let Some(record) = self.records.get_mut(&key) {
+        self.pending_exec_sources.remove(&key);
+        if let Some(mut record) = self.records.remove(&key) {
             record.last_seen = event.header.timestamp_ns;
             record.exit_timestamp = Some(event.header.timestamp_ns);
             record.exited = true;
-            Some(record.clone())
+            Some(record)
         } else {
             None
         }
