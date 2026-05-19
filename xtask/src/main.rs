@@ -107,7 +107,7 @@ fn run_user(debug: bool, ci_smoke: bool) -> anyhow::Result<()> {
                 "6s",
                 "bash",
                 "-c",
-                "sleep 1; while true; do /bin/true; sleep 0.1; done",
+                "sleep 0.2; while true; do /bin/true; sleep 0.1; done",
             ])
             .spawn()?;
     }
@@ -149,19 +149,29 @@ fn run_user(debug: bool, ci_smoke: bool) -> anyhow::Result<()> {
 fn validate_ci_smoke_output(stdout: &[u8]) -> anyhow::Result<()> {
     let stdout = std::str::from_utf8(stdout).context("CI smoke stdout was not valid UTF-8")?;
 
-    let event = stdout
+    let events: Vec<Value> = stdout
         .lines()
-        .find_map(|line| serde_json::from_str::<Value>(line).ok())
-        .context("CI smoke did not emit a JSON event on stdout")?;
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .collect();
 
-    if event["event_type"] != "process_exec" {
-        bail!("CI smoke emitted unexpected event_type: {event}");
+    let start = events
+        .iter()
+        .find(|event| event["event_type"] == "process_start")
+        .context("CI smoke did not emit a process_start JSON event on stdout")?;
+
+    if !start["pid"].is_u64() || !start["timestamp_ns"].is_u64() {
+        bail!("CI smoke process_start event was missing numeric pid/timestamp: {start}");
     }
-    if !event["pid"].is_u64() || !event["timestamp_ns"].is_u64() {
-        bail!("CI smoke process_exec event was missing numeric pid/timestamp: {event}");
+    if start["exe_path"].as_str().is_none_or(str::is_empty) {
+        bail!("CI smoke process_start event was missing exe_path: {start}");
     }
-    if event["filename"].as_str().is_none_or(str::is_empty) {
-        bail!("CI smoke process_exec event was missing filename: {event}");
+
+    let has_relationship = events
+        .iter()
+        .any(|event| event["event_type"] == "process_relationship");
+
+    if !has_relationship {
+        bail!("CI smoke did not emit a process_relationship event");
     }
 
     Ok(())

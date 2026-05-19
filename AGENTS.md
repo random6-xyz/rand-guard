@@ -80,6 +80,7 @@ Cargo aliases are also available, such as `cargo xf`, `cargo xc`, `cargo xl`, `c
 - Prefer messages such as `docs: add opencode project guidance`, `feat: capture exec event fields`, or `test: add smoke coverage for exec events`.
 - Before committing code changes, run at least `cargo run -p xtask -- ci-format`, `cargo run -p xtask -- check`, and the most relevant test/build command.
 - Do not commit generated build outputs under `target/`.
+- Can suggest to commit. But do not commit before the user explicitly mention.
 
 ## Tools Usage
 

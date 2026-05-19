@@ -14,7 +14,7 @@ network = false
 
 [process]
 enabled = true
-hooks = ["execve"]
+hooks = ["execve", "fork", "exit", "execveat"]
 collect_args = false
 collect_env = false
 collect_cwd = false
