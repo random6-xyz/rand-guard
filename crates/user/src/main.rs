@@ -48,6 +48,12 @@ async fn main() -> anyhow::Result<()> {
             "sched",
             "sched_process_exec",
         )?;
+        attach_tracepoint(
+            &mut ebpf,
+            "sys_enter_execve",
+            "syscalls",
+            "sys_enter_execve",
+        )?;
     }
 
     if hooks.contains("fork") {
@@ -69,12 +75,6 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if hooks.contains("execveat") {
-        attach_tracepoint(
-            &mut ebpf,
-            "sys_enter_execve",
-            "syscalls",
-            "sys_enter_execve",
-        )?;
         attach_tracepoint(
             &mut ebpf,
             "sys_enter_execveat",
