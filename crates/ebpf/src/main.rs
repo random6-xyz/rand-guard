@@ -151,7 +151,11 @@ pub fn sched_process_fork(ctx: TracePointContext) -> u32 {
 }
 
 fn try_sched_process_fork(ctx: TracePointContext) -> Result<u32, i64> {
+    let pid_tgid = bpf_get_current_pid_tgid();
     let uid_gid = bpf_get_current_uid_gid();
+
+    let pid = (pid_tgid >> 32) as u32;
+    let tid = pid_tgid as u32;
     let gid = (uid_gid >> 32) as u32;
     let uid = uid_gid as u32;
 
@@ -175,8 +179,8 @@ fn try_sched_process_fork(ctx: TracePointContext) -> Result<u32, i64> {
             (*ptr).header.size = ProcessForkEvent::SIZE;
             (*ptr).header.flags = 0;
             (*ptr).header.timestamp_ns = r#gen::bpf_ktime_get_ns();
-            (*ptr).header.pid = parent_pid;
-            (*ptr).header.tid = parent_pid;
+            (*ptr).header.pid = pid;
+            (*ptr).header.tid = tid;
             (*ptr).header.ppid = 0;
             (*ptr).header.uid = uid;
             (*ptr).header.gid = gid;
@@ -213,7 +217,11 @@ pub fn sched_process_exit(ctx: TracePointContext) -> u32 {
 }
 
 fn try_sched_process_exit(ctx: TracePointContext) -> Result<u32, i64> {
+    let pid_tgid = bpf_get_current_pid_tgid();
     let uid_gid = bpf_get_current_uid_gid();
+
+    let pid = (pid_tgid >> 32) as u32;
+    let tid = pid_tgid as u32;
     let gid = (uid_gid >> 32) as u32;
     let uid = uid_gid as u32;
 
@@ -223,7 +231,6 @@ fn try_sched_process_exit(ctx: TracePointContext) -> Result<u32, i64> {
     //   offset 28: prio (int)
     //   offset 32: group_dead (bool)
     // Read tracepoint data BEFORE reserving ring buffer.
-    let pid = unsafe { ctx.read_at::<u32>(24)? };
     let group_dead = unsafe { ctx.read_at::<u8>(32)? };
 
     let mut comm = [0u8; 16];
@@ -241,7 +248,7 @@ fn try_sched_process_exit(ctx: TracePointContext) -> Result<u32, i64> {
             (*ptr).header.flags = 0;
             (*ptr).header.timestamp_ns = r#gen::bpf_ktime_get_ns();
             (*ptr).header.pid = pid;
-            (*ptr).header.tid = pid;
+            (*ptr).header.tid = tid;
             (*ptr).header.ppid = 0;
             (*ptr).header.uid = uid;
             (*ptr).header.gid = gid;
