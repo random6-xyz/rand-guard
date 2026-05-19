@@ -14,6 +14,7 @@ pub enum EventKind {
     ProcessFork = 4,
     ProcessExit = 5,
     ExecSyscall = 6,
+    FileOpen = 7,
 }
 
 impl EventKind {
@@ -145,6 +146,32 @@ impl Default for ProcessExitEvent {
             comm: [0; COMM_LEN],
             group_dead: 0,
             _pad: [0; 7],
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FileOpenEvent {
+    pub header: EventHeader,
+    pub filename: [u8; PATH_LEN],
+    pub filename_len: u16,
+    pub flags: u32,
+    pub _pad: [u8; 2],
+}
+
+impl FileOpenEvent {
+    pub const SIZE: u16 = core::mem::size_of::<Self>() as u16;
+}
+
+impl Default for FileOpenEvent {
+    fn default() -> Self {
+        Self {
+            header: EventHeader::default(),
+            filename: [0; PATH_LEN],
+            filename_len: 0,
+            flags: 0,
+            _pad: [0; 2],
         }
     }
 }
