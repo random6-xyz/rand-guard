@@ -8,8 +8,8 @@ mod process_table;
 use anyhow::Context;
 use aya::{maps::ring_buf::RingBuf, programs::TracePoint};
 use edr_common::{
-    EVENT_SCHEMA_VERSION, EventKind, ExecSyscallEvent, ProcessExecEvent, ProcessExitEvent,
-    ProcessForkEvent,
+    EVENT_SCHEMA_VERSION, EventKind, ExecSyscallEvent, FileOpenEvent, ProcessExecEvent,
+    ProcessExitEvent, ProcessForkEvent,
 };
 use tokio::io::unix::AsyncFd;
 use tokio::signal;
@@ -38,10 +38,12 @@ async fn main() -> anyhow::Result<()> {
         warn!(error = %e, "failed to initialize eBPF logger");
     }
 
-    let hooks: std::collections::HashSet<&str> =
+    let process_hooks: std::collections::HashSet<&str> =
         config.process.hooks.iter().map(|s| s.as_str()).collect();
+    let file_hooks: std::collections::HashSet<&str> =
+        config.file.hooks.iter().map(|s| s.as_str()).collect();
 
-    if hooks.contains("execve") {
+    if process_hooks.contains("execve") {
         attach_tracepoint(
             &mut ebpf,
             "sched_process_exec",
@@ -56,7 +58,7 @@ async fn main() -> anyhow::Result<()> {
         )?;
     }
 
-    if hooks.contains("fork") {
+    if process_hooks.contains("fork") {
         attach_tracepoint(
             &mut ebpf,
             "sched_process_fork",
@@ -65,7 +67,7 @@ async fn main() -> anyhow::Result<()> {
         )?;
     }
 
-    if hooks.contains("exit") {
+    if process_hooks.contains("exit") {
         attach_tracepoint(
             &mut ebpf,
             "sched_process_exit",
@@ -74,12 +76,21 @@ async fn main() -> anyhow::Result<()> {
         )?;
     }
 
-    if hooks.contains("execveat") {
+    if process_hooks.contains("execveat") {
         attach_tracepoint(
             &mut ebpf,
             "sys_enter_execveat",
             "syscalls",
             "sys_enter_execveat",
+        )?;
+    }
+
+    if config.file.enabled && file_hooks.contains("openat") {
+        attach_tracepoint(
+            &mut ebpf,
+            "sys_enter_openat",
+            "syscalls",
+            "sys_enter_openat",
         )?;
     }
 
@@ -166,6 +177,18 @@ async fn main() -> anyhow::Result<()> {
                             }
                             None
                         }
+                        k if k == EventKind::FileOpen.as_u16() => {
+                            if bytes.len() >= core::mem::size_of::<FileOpenEvent>()
+                                && header.size as usize == core::mem::size_of::<FileOpenEvent>()
+                            {
+                                let event = unsafe {
+                                    core::ptr::read_unaligned(bytes.as_ptr() as *const FileOpenEvent)
+                                };
+                                Some(crate::normalize::normalize_file_open(&event, &mut table))
+                            } else {
+                                None
+                            }
+                        }
                         _ => None,
                     };
 
@@ -176,6 +199,7 @@ async fn main() -> anyhow::Result<()> {
                                 NormalizedEvent::ProcessStart(_) => ci_smoke_start_seen = true,
                                 NormalizedEvent::ProcessRelationship(_) |
                                 NormalizedEvent::ProcessExit(_) => ci_smoke_rel_or_exit_seen = true,
+                                NormalizedEvent::FileOpen(_) => {}
                             }
                             if ci_smoke_start_seen && ci_smoke_rel_or_exit_seen {
                                 return Ok(());

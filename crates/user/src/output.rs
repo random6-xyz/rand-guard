@@ -2,7 +2,7 @@ use std::io::{self, Write};
 
 use anyhow::Context;
 
-use crate::normalize::{NormalizedEvent, ProcessExit, ProcessRelationship, ProcessStart};
+use crate::normalize::{FileOpen, NormalizedEvent, ProcessExit, ProcessRelationship, ProcessStart};
 
 pub struct JsonOutput<W> {
     writer: W,
@@ -35,6 +35,7 @@ pub fn format_normalized_event_json(event: &NormalizedEvent) -> String {
         NormalizedEvent::ProcessStart(start) => format_process_start_json(start),
         NormalizedEvent::ProcessExit(exit) => format_process_exit_json(exit),
         NormalizedEvent::ProcessRelationship(rel) => format_process_relationship_json(rel),
+        NormalizedEvent::FileOpen(file) => format_file_open_json(file),
     }
 }
 
@@ -80,6 +81,24 @@ fn format_process_relationship_json(rel: &ProcessRelationship) -> String {
         "child_comm": rel.child_comm,
         "uid": rel.uid,
         "gid": rel.gid,
+    })
+    .to_string()
+}
+
+fn format_file_open_json(file: &FileOpen) -> String {
+    serde_json::json!({
+        "event_type": "file_open",
+        "timestamp_ns": file.timestamp_ns,
+        "pid": file.pid,
+        "tid": file.tid,
+        "ppid": file.ppid,
+        "uid": file.uid,
+        "gid": file.gid,
+        "comm": file.comm,
+        "exe_path": file.exe_path,
+        "filename": file.filename,
+        "flags": file.flags,
+        "filename_truncated": file.filename_truncated,
     })
     .to_string()
 }

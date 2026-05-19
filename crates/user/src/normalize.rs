@@ -1,6 +1,6 @@
 use edr_common::{
-    EVENT_FLAG_FILENAME_TRUNCATED, ExecSyscallEvent, ProcessExecEvent, ProcessExitEvent,
-    ProcessForkEvent,
+    EVENT_FLAG_FILENAME_TRUNCATED, ExecSyscallEvent, FileOpenEvent, ProcessExecEvent,
+    ProcessExitEvent, ProcessForkEvent,
 };
 
 use crate::process_table::{ProcessTable, fixed_string};
@@ -13,6 +13,7 @@ pub enum NormalizedEvent {
     ProcessStart(ProcessStart),
     ProcessExit(ProcessExit),
     ProcessRelationship(ProcessRelationship),
+    FileOpen(FileOpen),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -51,6 +52,21 @@ pub struct ProcessRelationship {
     pub child_comm: String,
     pub uid: u32,
     pub gid: u32,
+    pub timestamp_ns: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileOpen {
+    pub pid: u32,
+    pub tid: u32,
+    pub ppid: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub comm: String,
+    pub exe_path: String,
+    pub filename: String,
+    pub flags: u32,
+    pub filename_truncated: bool,
     pub timestamp_ns: u64,
 }
 
@@ -126,6 +142,33 @@ pub fn normalize_exit(event: &ProcessExitEvent, table: &mut ProcessTable) -> Nor
 /// `execveat`).  No normalized event is emitted for raw syscall records.
 pub fn normalize_exec_syscall(event: &ExecSyscallEvent, table: &mut ProcessTable) {
     table.set_pending_source(event);
+}
+
+/// Convert a raw `sys_enter_openat` record into a normalized `FileOpen`.
+pub fn normalize_file_open(event: &FileOpenEvent, table: &mut ProcessTable) -> NormalizedEvent {
+    let filename = fixed_string(&event.filename, event.filename.len());
+    let filename_truncated = event.header.flags & EVENT_FLAG_FILENAME_TRUNCATED != 0;
+
+    let (comm, exe_path, ppid) =
+        if let Some(record) = table.get(&(event.header.pid, event.header.tid)) {
+            (record.comm.clone(), record.exe_path.clone(), record.ppid)
+        } else {
+            (String::new(), String::new(), 0)
+        };
+
+    NormalizedEvent::FileOpen(FileOpen {
+        pid: event.header.pid,
+        tid: event.header.tid,
+        ppid,
+        uid: event.header.uid,
+        gid: event.header.gid,
+        comm,
+        exe_path,
+        filename,
+        flags: event.flags,
+        filename_truncated,
+        timestamp_ns: event.header.timestamp_ns,
+    })
 }
 
 #[cfg(test)]

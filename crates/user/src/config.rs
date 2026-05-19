@@ -41,11 +41,34 @@ impl Config {
         if !self.events.process || !self.process.enabled {
             anyhow::bail!("process event collection must be enabled for the current runtime");
         }
-        let supported_hooks: &[&str] = &["execve", "fork", "exit", "execveat"];
+        let supported_hooks: &[&str] = &[
+            "execve",
+            "fork",
+            "exit",
+            "execveat",
+            "openat",
+            "openat2",
+            "write",
+            "writev",
+            "pwrite64",
+            "rename",
+            "renameat",
+            "renameat2",
+            "unlink",
+            "unlinkat",
+        ];
         for hook in &self.process.hooks {
             if !supported_hooks.contains(&hook.as_str()) {
                 anyhow::bail!(
                     "process hook '{}' is not supported by the current runtime",
+                    hook
+                );
+            }
+        }
+        for hook in &self.file.hooks {
+            if !supported_hooks.contains(&hook.as_str()) {
+                anyhow::bail!(
+                    "file hook '{}' is not supported by the current runtime",
                     hook
                 );
             }
@@ -55,8 +78,8 @@ impl Config {
                 "process argument, environment, and cwd collection are not supported by the current runtime"
             );
         }
-        if self.events.file || self.file.enabled {
-            anyhow::bail!("file event collection is not supported by the current runtime");
+        if self.events.file && !self.file.enabled {
+            anyhow::bail!("file events are enabled but file collection is disabled");
         }
         if self.events.network || self.network.enabled {
             anyhow::bail!("network event collection is not supported by the current runtime");

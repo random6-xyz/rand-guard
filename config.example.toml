@@ -20,7 +20,7 @@ collect_env = false
 collect_cwd = false
 
 [file]
-enabled = false
+enabled = true
 hooks = ["openat", "unlink", "rename"]
 watch_paths = ["/etc", "/usr/bin", "/bin"]
 exclude_paths = ["/var/log", "/tmp", "/proc", "/sys"]
