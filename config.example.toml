@@ -62,6 +62,17 @@ action = "alert"
 direction = "outbound"
 ports = [4444, 1337, 31337]
 
+[[detections.persistence]]
+name = "systemd_service_modified"
+paths = ["/etc/systemd/system/", "/usr/lib/systemd/system/", "/run/systemd/system/"]
+patterns = ["*.service"]
+operations = ["file_open", "file_write", "file_rename", "file_unlink"]
+
+[[detections.persistence]]
+name = "cron_modified"
+paths = ["/etc/cron.d/", "/etc/cron.daily/", "/etc/crontab"]
+operations = ["file_open", "file_write", "file_rename", "file_unlink"]
+
 [output]
 type = "stdout" # stdout is supported by the current MVP runtime
 format = "json"

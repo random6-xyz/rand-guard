@@ -13,6 +13,7 @@ pub struct Config {
     pub file: FileConfig,
     pub network: NetworkConfig,
     pub rules: Vec<RuleConfig>,
+    pub detections: DetectionsConfig,
     pub output: OutputConfig,
     pub performance: PerformanceConfig,
 }
@@ -235,6 +236,22 @@ pub enum OutputFormat {
 pub struct PerformanceConfig {
     pub max_events_per_second: u32,
     pub drop_when_full: bool,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DetectionsConfig {
+    pub persistence: Vec<PersistenceRule>,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PersistenceRule {
+    pub name: String,
+    pub paths: Vec<String>,
+    #[serde(default)]
+    pub patterns: Vec<String>,
+    pub operations: Vec<String>,
 }
 
 #[cfg(test)]

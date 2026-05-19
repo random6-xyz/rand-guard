@@ -1,4 +1,5 @@
 mod config;
+mod detections;
 mod logging;
 mod normalize;
 mod output;
@@ -255,7 +256,7 @@ async fn main() -> anyhow::Result<()> {
                                 let event = unsafe {
                                     core::ptr::read_unaligned(bytes.as_ptr() as *const FileOpenEvent)
                                 };
-                                crate::normalize::normalize_file_open(&event, &mut table, Some(&config.file))
+                                crate::normalize::normalize_file_open(&event, &mut table, Some(&config.file), &config.detections.persistence)
                             } else {
                                 None
                             }
@@ -267,7 +268,7 @@ async fn main() -> anyhow::Result<()> {
                                 let event = unsafe {
                                     core::ptr::read_unaligned(bytes.as_ptr() as *const FileOpenAt2Event)
                                 };
-                                crate::normalize::normalize_file_openat2(&event, &mut table, Some(&config.file))
+                                crate::normalize::normalize_file_openat2(&event, &mut table, Some(&config.file), &config.detections.persistence)
                             } else {
                                 None
                             }
@@ -279,7 +280,7 @@ async fn main() -> anyhow::Result<()> {
                                 let event = unsafe {
                                     core::ptr::read_unaligned(bytes.as_ptr() as *const FileWriteEvent)
                                 };
-                                crate::normalize::normalize_file_write(&event, &mut table, Some(&config.file))
+                                crate::normalize::normalize_file_write(&event, &mut table, Some(&config.file), &config.detections.persistence)
                             } else {
                                 None
                             }
@@ -291,7 +292,7 @@ async fn main() -> anyhow::Result<()> {
                                 let event = unsafe {
                                     core::ptr::read_unaligned(bytes.as_ptr() as *const FileWriteVEvent)
                                 };
-                                crate::normalize::normalize_file_writev(&event, &mut table, Some(&config.file))
+                                crate::normalize::normalize_file_writev(&event, &mut table, Some(&config.file), &config.detections.persistence)
                             } else {
                                 None
                             }
@@ -303,7 +304,7 @@ async fn main() -> anyhow::Result<()> {
                                 let event = unsafe {
                                     core::ptr::read_unaligned(bytes.as_ptr() as *const FilePWrite64Event)
                                 };
-                                crate::normalize::normalize_file_pwrite64(&event, &mut table, Some(&config.file))
+                                crate::normalize::normalize_file_pwrite64(&event, &mut table, Some(&config.file), &config.detections.persistence)
                             } else {
                                 None
                             }
@@ -315,7 +316,7 @@ async fn main() -> anyhow::Result<()> {
                                 let event = unsafe {
                                     core::ptr::read_unaligned(bytes.as_ptr() as *const FileRenameEvent)
                                 };
-                                crate::normalize::normalize_file_rename(&event, &mut table, Some(&config.file))
+                                crate::normalize::normalize_file_rename(&event, &mut table, Some(&config.file), &config.detections.persistence)
                             } else {
                                 None
                             }
@@ -327,7 +328,7 @@ async fn main() -> anyhow::Result<()> {
                                 let event = unsafe {
                                     core::ptr::read_unaligned(bytes.as_ptr() as *const FileRenameAtEvent)
                                 };
-                                crate::normalize::normalize_file_renameat(&event, &mut table, Some(&config.file))
+                                crate::normalize::normalize_file_renameat(&event, &mut table, Some(&config.file), &config.detections.persistence)
                             } else {
                                 None
                             }
@@ -339,7 +340,7 @@ async fn main() -> anyhow::Result<()> {
                                 let event = unsafe {
                                     core::ptr::read_unaligned(bytes.as_ptr() as *const FileRenameAt2Event)
                                 };
-                                crate::normalize::normalize_file_renameat2(&event, &mut table, Some(&config.file))
+                                crate::normalize::normalize_file_renameat2(&event, &mut table, Some(&config.file), &config.detections.persistence)
                             } else {
                                 None
                             }
@@ -351,7 +352,7 @@ async fn main() -> anyhow::Result<()> {
                                 let event = unsafe {
                                     core::ptr::read_unaligned(bytes.as_ptr() as *const FileUnlinkEvent)
                                 };
-                                crate::normalize::normalize_file_unlink(&event, &mut table, Some(&config.file))
+                                crate::normalize::normalize_file_unlink(&event, &mut table, Some(&config.file), &config.detections.persistence)
                             } else {
                                 None
                             }
@@ -363,7 +364,7 @@ async fn main() -> anyhow::Result<()> {
                                 let event = unsafe {
                                     core::ptr::read_unaligned(bytes.as_ptr() as *const FileUnlinkAtEvent)
                                 };
-                                crate::normalize::normalize_file_unlinkat(&event, &mut table, Some(&config.file))
+                                crate::normalize::normalize_file_unlinkat(&event, &mut table, Some(&config.file), &config.detections.persistence)
                             } else {
                                 None
                             }

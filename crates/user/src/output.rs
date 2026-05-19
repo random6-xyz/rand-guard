@@ -112,6 +112,8 @@ fn format_file_open_json(file: &FileOpen) -> String {
         "filename": file.filename,
         "flags": file.flags,
         "filename_truncated": file.filename_truncated,
+        "alert": file.alert,
+        "detection_type": file.detection_type,
     })
     .to_string()
 }
@@ -130,6 +132,8 @@ fn format_file_openat2_json(file: &FileOpenAt2) -> String {
         "filename": file.filename,
         "flags": file.flags,
         "filename_truncated": file.filename_truncated,
+        "alert": file.alert,
+        "detection_type": file.detection_type,
     })
     .to_string()
 }
@@ -148,6 +152,8 @@ fn format_file_write_json(file: &FileWrite) -> String {
         "fd": file.fd,
         "count": file.count,
         "resolved_path": file.resolved_path,
+        "alert": file.alert,
+        "detection_type": file.detection_type,
     })
     .to_string()
 }
@@ -166,6 +172,8 @@ fn format_file_writev_json(file: &FileWriteV) -> String {
         "fd": file.fd,
         "iovcnt": file.iovcnt,
         "resolved_path": file.resolved_path,
+        "alert": file.alert,
+        "detection_type": file.detection_type,
     })
     .to_string()
 }
@@ -185,6 +193,8 @@ fn format_file_pwrite64_json(file: &FilePWrite64) -> String {
         "count": file.count,
         "pos": file.pos,
         "resolved_path": file.resolved_path,
+        "alert": file.alert,
+        "detection_type": file.detection_type,
     })
     .to_string()
 }
@@ -203,6 +213,8 @@ fn format_file_rename_json(file: &FileRename) -> String {
         "old_filename": file.old_filename,
         "new_filename": file.new_filename,
         "filename_truncated": file.filename_truncated,
+        "alert": file.alert,
+        "detection_type": file.detection_type,
     })
     .to_string()
 }
@@ -221,6 +233,8 @@ fn format_file_renameat_json(file: &FileRenameAt) -> String {
         "old_filename": file.old_filename,
         "new_filename": file.new_filename,
         "filename_truncated": file.filename_truncated,
+        "alert": file.alert,
+        "detection_type": file.detection_type,
     })
     .to_string()
 }
@@ -240,6 +254,8 @@ fn format_file_renameat2_json(file: &FileRenameAt2) -> String {
         "new_filename": file.new_filename,
         "flags": file.flags,
         "filename_truncated": file.filename_truncated,
+        "alert": file.alert,
+        "detection_type": file.detection_type,
     })
     .to_string()
 }
@@ -257,6 +273,8 @@ fn format_file_unlink_json(file: &FileUnlink) -> String {
         "exe_path": file.exe_path,
         "filename": file.filename,
         "filename_truncated": file.filename_truncated,
+        "alert": file.alert,
+        "detection_type": file.detection_type,
     })
     .to_string()
 }
@@ -275,6 +293,8 @@ fn format_file_unlinkat_json(file: &FileUnlinkAt) -> String {
         "filename": file.filename,
         "flags": file.flags,
         "filename_truncated": file.filename_truncated,
+        "alert": file.alert,
+        "detection_type": file.detection_type,
     })
     .to_string()
 }
