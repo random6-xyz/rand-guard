@@ -1,6 +1,6 @@
 use anyhow::{Context, bail};
 use serde_json::Value;
-use std::process::Command;
+use std::process::{Child, Command};
 
 const USAGE: &str = "usage: cargo xtask <command> [command...]\n\n\
         commands:\n\n\
@@ -98,30 +98,104 @@ fn run_user(debug: bool, ci_smoke: bool) -> anyhow::Result<()> {
     let ebpf_obj_str = ebpf_obj.to_str().context("path is not valid UTF-8")?;
 
     let mut command = Command::new("sudo");
+    let mut smoke_helpers = Vec::new();
 
-    if ci_smoke {
+    let config_path = if ci_smoke {
         command.env("CI_SMOKE", "1");
 
-        Command::new("timeout")
-            .args([
-                "6s",
-                "bash",
-                "-c",
-                "sleep 0.2; while true; do /bin/true; sleep 0.1; done",
-            ])
-            .spawn()?;
-    }
+        smoke_helpers.push(
+            Command::new("timeout")
+                .args([
+                    "12s",
+                    "bash",
+                    "-c",
+                    "sleep 0.2; while true; do /bin/true; sleep 0.1; done",
+                ])
+                .spawn()?,
+        );
+
+        // Spawn a short-lived child that touches a file under /tmp so the
+        // file_open tracepoint has a chance to fire.
+        smoke_helpers.push(
+            Command::new("bash")
+                .args(["-c", "sleep 2; touch /tmp/edr_ci_smoke_file"])
+                .spawn()?,
+        );
+
+        let smoke_config =
+            std::env::temp_dir().join(format!("edr_ci_smoke_config_{}.toml", std::process::id()));
+        let smoke_config_contents = r#"[agent]
+id = "ci-smoke"
+mode = "monitor"
+log_level = "warn"
+
+[ebpf]
+enabled = true
+buffer_size = 8192
+
+[events]
+process = true
+file = true
+network = false
+
+[process]
+enabled = true
+hooks = ["execve", "fork", "exit", "execveat"]
+collect_args = false
+collect_env = false
+collect_cwd = false
+
+[file]
+enabled = true
+hooks = ["openat"]
+watch_paths = ["/tmp"]
+watch_patterns = []
+exclude_paths = []
+
+[network]
+enabled = false
+hooks = ["connect"]
+collect_dns = false
+collect_payload = false
+
+[[rules]]
+id = "DUMMY-001"
+name = "Dummy"
+enabled = false
+type = "process"
+severity = "low"
+action = "alert"
+
+[detections]
+persistence = []
+
+[output]
+type = "stdout"
+format = "json"
+
+[performance]
+max_events_per_second = 5000
+drop_when_full = true
+"#;
+        std::fs::write(&smoke_config, smoke_config_contents)
+            .context("failed to write CI smoke config")?;
+        smoke_config
+    } else {
+        repo_root.join("config.example.toml")
+    };
 
     if ci_smoke {
-        let config = repo_root.join("config.example.toml");
-        let config_str = config.to_str().context("path is not valid UTF-8")?;
+        let config_str = config_path.to_str().context("path is not valid UTF-8")?;
 
-        let output = command
+        let output_result = command
             .args(["-E", user_bin_str])
             .env("EDR_EBPF_OBJECT", ebpf_obj_str)
             .env("EDR_CONFIG", config_str)
-            .output()
-            .context("failed to run user loader with sudo directly")?;
+            .output();
+
+        cleanup_smoke_helpers(&mut smoke_helpers);
+
+        let output = output_result.context("failed to run user loader with sudo directly")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -144,6 +218,13 @@ fn run_user(debug: bool, ci_smoke: bool) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn cleanup_smoke_helpers(children: &mut [Child]) {
+    for child in children {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
 }
 
 fn validate_ci_smoke_output(stdout: &[u8]) -> anyhow::Result<()> {
@@ -172,6 +253,14 @@ fn validate_ci_smoke_output(stdout: &[u8]) -> anyhow::Result<()> {
 
     if !has_relationship {
         bail!("CI smoke did not emit a process_relationship event");
+    }
+
+    let has_file_open = events
+        .iter()
+        .any(|event| event["event_type"] == "file_open");
+
+    if !has_file_open {
+        bail!("CI smoke did not emit a file_open event");
     }
 
     Ok(())

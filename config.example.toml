@@ -9,7 +9,7 @@ buffer_size = 8192
 
 [events]
 process = true
-file = false
+file = true
 network = false
 
 [process]
@@ -20,9 +20,10 @@ collect_env = false
 collect_cwd = false
 
 [file]
-enabled = false
-hooks = ["openat", "unlink", "rename"]
+enabled = true
+hooks = ["openat", "openat2", "write", "rename", "renameat2", "unlink", "unlinkat"]
 watch_paths = ["/etc", "/usr/bin", "/bin"]
+watch_patterns = ["*.service"]
 exclude_paths = ["/var/log", "/tmp", "/proc", "/sys"]
 
 [network]
@@ -60,6 +61,17 @@ severity = "medium"
 action = "alert"
 direction = "outbound"
 ports = [4444, 1337, 31337]
+
+[[detections.persistence]]
+name = "systemd_service_modified"
+paths = ["/etc/systemd/system/", "/usr/lib/systemd/system/", "/run/systemd/system/"]
+patterns = ["*.service"]
+operations = ["file_open", "file_write", "file_rename", "file_unlink"]
+
+[[detections.persistence]]
+name = "cron_modified"
+paths = ["/etc/cron.d/", "/etc/cron.daily/", "/etc/crontab"]
+operations = ["file_open", "file_write", "file_rename", "file_unlink"]
 
 [output]
 type = "stdout" # stdout is supported by the current MVP runtime
