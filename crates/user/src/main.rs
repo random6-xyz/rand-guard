@@ -88,7 +88,7 @@ async fn main() -> anyhow::Result<()> {
         )?;
     }
 
-    if config.file.enabled {
+    if config.events.file && config.file.enabled {
         if file_hooks.contains("openat") {
             attach_tracepoint(
                 &mut ebpf,

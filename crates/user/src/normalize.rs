@@ -333,7 +333,7 @@ fn passes_file_filter(filename: &str, config: &FileConfig) -> bool {
         let matches_prefix = config.watch_paths.iter().any(|p| filename.starts_with(p));
         let matches_pattern = config.watch_patterns.iter().any(|pat| {
             if let Some(suffix) = pat.strip_prefix("*.") {
-                filename.ends_with(suffix)
+                filename.ends_with(&format!(".{suffix}"))
             } else {
                 filename.contains(pat.as_str())
             }
@@ -812,6 +812,31 @@ mod tests {
         event
     }
 
+    fn file_config() -> FileConfig {
+        FileConfig {
+            enabled: true,
+            hooks: vec!["openat".to_string()],
+            watch_paths: vec!["/etc".to_string()],
+            watch_patterns: vec!["*.service".to_string()],
+            exclude_paths: vec!["/etc/ignore".to_string()],
+        }
+    }
+
+    fn make_file_open_event(filename: &str) -> FileOpenEvent {
+        let mut event = FileOpenEvent::default();
+        event.header.kind = EventKind::FileOpen.as_u16();
+        event.header.version = EVENT_SCHEMA_VERSION;
+        event.header.size = FileOpenEvent::SIZE;
+        event.header.timestamp_ns = 4000;
+        event.header.pid = 42;
+        event.header.tid = 42;
+        event.header.uid = 1000;
+        event.header.gid = 1000;
+        event.filename[..filename.len()].copy_from_slice(filename.as_bytes());
+        event.filename_len = filename.len() as u16;
+        event
+    }
+
     #[test]
     fn exec_normalizes_to_process_start() {
         let mut table = ProcessTable::new();
@@ -828,6 +853,55 @@ mod tests {
             }
             other => panic!("expected ProcessStart, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn file_filter_matches_watch_and_exclude_rules() {
+        let config = file_config();
+
+        assert!(passes_file_filter("/etc/passwd", &config));
+        assert!(passes_file_filter("/tmp/demo.service", &config));
+        assert!(!passes_file_filter("/tmp/fooservice", &config));
+        assert!(!passes_file_filter("/var/tmp/demo.txt", &config));
+        assert!(!passes_file_filter("/etc/ignore/secret", &config));
+    }
+
+    #[test]
+    fn file_open_normalization_applies_filter_and_detection() {
+        let mut table = ProcessTable::new();
+        table.update_from_exec(&make_exec_event(
+            42,
+            42,
+            7,
+            "/usr/bin/systemctl",
+            "systemctl",
+        ));
+        let rules = vec![PersistenceRule {
+            name: "systemd_service_modified".to_string(),
+            paths: vec!["/etc/systemd/system/".to_string()],
+            patterns: vec!["*.service".to_string()],
+            operations: vec!["file_open".to_string()],
+        }];
+
+        let event = make_file_open_event("/etc/systemd/system/demo.service");
+        let normalized = normalize_file_open(&event, &mut table, Some(&file_config()), &rules)
+            .expect("matching file open should be emitted");
+
+        match normalized {
+            NormalizedEvent::FileOpen(file) => {
+                assert_eq!(file.ppid, 7);
+                assert_eq!(file.comm, "systemctl");
+                assert!(file.alert);
+                assert_eq!(
+                    file.detection_type,
+                    Some("systemd_service_modified".to_string())
+                );
+            }
+            other => panic!("expected FileOpen, got {:?}", other),
+        }
+
+        let ignored = make_file_open_event("/var/tmp/demo.txt");
+        assert!(normalize_file_open(&ignored, &mut table, Some(&file_config()), &rules).is_none());
     }
 
     #[test]

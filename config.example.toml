@@ -9,7 +9,7 @@ buffer_size = 8192
 
 [events]
 process = true
-file = false
+file = true
 network = false
 
 [process]

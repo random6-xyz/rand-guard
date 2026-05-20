@@ -20,7 +20,7 @@ pub fn check_persistence(path: &str, operation: &str, rules: &[PersistenceRule])
         let matches_path = rule.paths.iter().any(|p| path.starts_with(p));
         let matches_pattern = rule.patterns.iter().any(|pat| {
             if let Some(suffix) = pat.strip_prefix("*.") {
-                path.ends_with(suffix)
+                path.ends_with(&format!(".{suffix}"))
             } else {
                 path.contains(pat.as_str())
             }
@@ -71,6 +71,25 @@ mod tests {
             &["file_open"],
         )];
 
+        assert_eq!(
+            check_persistence("/etc/systemd/system/foo.service", "file_open", &rules),
+            Some("systemd_service_modified".to_string())
+        );
+    }
+
+    #[test]
+    fn wildcard_extension_requires_dot_suffix() {
+        let rules = vec![make_rule(
+            "systemd_service_modified",
+            &[],
+            &["*.service"],
+            &["file_open"],
+        )];
+
+        assert_eq!(
+            check_persistence("/etc/systemd/system/fooservice", "file_open", &rules),
+            None
+        );
         assert_eq!(
             check_persistence("/etc/systemd/system/foo.service", "file_open", &rules),
             Some("systemd_service_modified".to_string())

@@ -42,11 +42,8 @@ impl Config {
         if !self.events.process || !self.process.enabled {
             anyhow::bail!("process event collection must be enabled for the current runtime");
         }
-        let supported_hooks: &[&str] = &[
-            "execve",
-            "fork",
-            "exit",
-            "execveat",
+        let supported_process_hooks: &[&str] = &["execve", "fork", "exit", "execveat"];
+        let supported_file_hooks: &[&str] = &[
             "openat",
             "openat2",
             "write",
@@ -59,7 +56,7 @@ impl Config {
             "unlinkat",
         ];
         for hook in &self.process.hooks {
-            if !supported_hooks.contains(&hook.as_str()) {
+            if !supported_process_hooks.contains(&hook.as_str()) {
                 anyhow::bail!(
                     "process hook '{}' is not supported by the current runtime",
                     hook
@@ -67,7 +64,7 @@ impl Config {
             }
         }
         for hook in &self.file.hooks {
-            if !supported_hooks.contains(&hook.as_str()) {
+            if !supported_file_hooks.contains(&hook.as_str()) {
                 anyhow::bail!(
                     "file hook '{}' is not supported by the current runtime",
                     hook
@@ -81,6 +78,9 @@ impl Config {
         }
         if self.events.file && !self.file.enabled {
             anyhow::bail!("file events are enabled but file collection is disabled");
+        }
+        if self.file.enabled && !self.events.file {
+            anyhow::bail!("file collection is enabled but file events are disabled");
         }
         if self.events.network || self.network.enabled {
             anyhow::bail!("network event collection is not supported by the current runtime");
@@ -268,7 +268,7 @@ mod tests {
         assert!(config.ebpf.enabled);
         assert_eq!(config.ebpf.buffer_size, 8192);
         assert!(config.events.process);
-        assert!(!config.events.file);
+        assert!(config.events.file);
         assert!(!config.events.network);
         assert_eq!(config.process.hooks, ["execve", "fork", "exit", "execveat"]);
         assert!(!config.process.collect_args);
@@ -334,6 +334,48 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("process argument, environment, and cwd collection")
+        );
+    }
+
+    #[test]
+    fn rejects_hooks_in_wrong_section() {
+        let mut config = Config::from_str(include_str!("../../../config.example.toml"))
+            .expect("example config should parse");
+        config.process.hooks.push("openat".to_string());
+
+        let err = config
+            .validate_current_runtime()
+            .expect_err("file hooks should be rejected in process section");
+        assert!(
+            err.to_string()
+                .contains("process hook 'openat' is not supported")
+        );
+
+        let mut config = Config::from_str(include_str!("../../../config.example.toml"))
+            .expect("example config should parse");
+        config.file.hooks.push("execve".to_string());
+
+        let err = config
+            .validate_current_runtime()
+            .expect_err("process hooks should be rejected in file section");
+        assert!(
+            err.to_string()
+                .contains("file hook 'execve' is not supported")
+        );
+    }
+
+    #[test]
+    fn rejects_inconsistent_file_event_flags() {
+        let mut config = Config::from_str(include_str!("../../../config.example.toml"))
+            .expect("example config should parse");
+        config.events.file = false;
+
+        let err = config
+            .validate_current_runtime()
+            .expect_err("enabled file collection should require file events");
+        assert!(
+            err.to_string()
+                .contains("file collection is enabled but file events are disabled")
         );
     }
 
