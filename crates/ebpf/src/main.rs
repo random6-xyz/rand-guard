@@ -517,7 +517,7 @@ fn try_sys_enter_writev(ctx: TracePointContext) -> Result<u32, i64> {
     //   offset 24: vec (const struct iovec *)
     //   offset 32: vlen (int)
     let fd = unsafe { ctx.read_at::<u32>(16)? } as u64;
-    let iovcnt = unsafe { ctx.read_at::<i32>(32)? } as u64;
+    let iovcnt = unsafe { ctx.read_at::<i32>(32)? } as i64;
 
     if let Some(mut entry) = EVENTS.reserve::<FileWriteVEvent>(0) {
         unsafe {
@@ -566,7 +566,7 @@ fn try_sys_enter_pwrite64(ctx: TracePointContext) -> Result<u32, i64> {
     //   offset 40: pos (loff_t)
     let fd = unsafe { ctx.read_at::<u32>(16)? } as u64;
     let count = unsafe { ctx.read_at::<u64>(32)? };
-    let pos = unsafe { ctx.read_at::<u64>(40)? };
+    let pos = unsafe { ctx.read_at::<i64>(40)? };
 
     if let Some(mut entry) = EVENTS.reserve::<FilePWrite64Event>(0) {
         unsafe {

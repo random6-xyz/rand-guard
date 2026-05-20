@@ -228,7 +228,7 @@ impl FileWriteEvent {
 pub struct FileWriteVEvent {
     pub header: EventHeader,
     pub fd: u64,
-    pub iovcnt: u64,
+    pub iovcnt: i64,
 }
 
 impl FileWriteVEvent {
@@ -241,7 +241,7 @@ pub struct FilePWrite64Event {
     pub header: EventHeader,
     pub fd: u64,
     pub count: u64,
-    pub pos: u64,
+    pub pos: i64,
 }
 
 impl FilePWrite64Event {

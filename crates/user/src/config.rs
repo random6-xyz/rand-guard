@@ -13,6 +13,7 @@ pub struct Config {
     pub file: FileConfig,
     pub network: NetworkConfig,
     pub rules: Vec<RuleConfig>,
+    #[serde(default)]
     pub detections: DetectionsConfig,
     pub output: OutputConfig,
     pub performance: PerformanceConfig,
@@ -142,6 +143,7 @@ pub struct FileConfig {
     pub enabled: bool,
     pub hooks: Vec<String>,
     pub watch_paths: Vec<String>,
+    #[serde(default)]
     pub watch_patterns: Vec<String>,
     pub exclude_paths: Vec<String>,
 }
@@ -238,9 +240,10 @@ pub struct PerformanceConfig {
     pub drop_when_full: bool,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct DetectionsConfig {
+    #[serde(default)]
     pub persistence: Vec<PersistenceRule>,
 }
 
@@ -290,6 +293,63 @@ mod tests {
         config
             .validate_current_runtime()
             .expect("example config should match current runtime support");
+    }
+
+    #[test]
+    fn defaults_new_optional_file_config_fields() {
+        let config = Config::from_str(
+            r#"
+            rules = []
+
+            [agent]
+            id = "dev-host-001"
+            mode = "monitor"
+            log_level = "info"
+
+            [ebpf]
+            enabled = true
+            buffer_size = 8192
+
+            [events]
+            process = true
+            file = true
+            network = false
+
+            [process]
+            enabled = true
+            hooks = ["execve", "fork", "exit", "execveat"]
+            collect_args = false
+            collect_env = false
+            collect_cwd = false
+
+            [file]
+            enabled = true
+            hooks = ["openat"]
+            watch_paths = ["/tmp"]
+            exclude_paths = []
+
+            [network]
+            enabled = false
+            hooks = ["connect"]
+            collect_dns = false
+            collect_payload = false
+
+            [output]
+            type = "stdout"
+            format = "json"
+
+            [performance]
+            max_events_per_second = 5000
+            drop_when_full = true
+            "#,
+        )
+        .expect("new optional config fields should default when omitted");
+
+        assert!(config.file.watch_patterns.is_empty());
+        assert!(config.detections.persistence.is_empty());
+        config
+            .validate_current_runtime()
+            .expect("config with omitted optional fields should validate");
     }
 
     #[test]
