@@ -5,7 +5,7 @@ use edr_common::{
     NetworkFamily, NetworkListenEvent, ProcessExecEvent, ProcessExitEvent, ProcessForkEvent,
 };
 
-use crate::config::{FileConfig, PersistenceRule};
+use crate::config::{FileConfig, NetworkDetectionRule, NetworkDirection, PersistenceRule};
 
 use crate::process_table::{ProcessTable, fixed_string};
 
@@ -482,6 +482,20 @@ fn detect_for_paths(
     (false, None)
 }
 
+fn detect_for_network(
+    direction: NetworkDirection,
+    port: u16,
+    process_name: &str,
+    detections: &[NetworkDetectionRule],
+) -> (bool, Option<String>) {
+    if let Some(name) = crate::detections::check_network(direction, port, process_name, detections)
+    {
+        (true, Some(name))
+    } else {
+        (false, None)
+    }
+}
+
 /// Convert a raw `sys_enter_openat` record into a normalized `FileOpen`.
 pub fn normalize_file_open(
     event: &FileOpenEvent,
@@ -826,8 +840,11 @@ pub fn normalize_file_unlinkat(
 pub fn normalize_network_connect(
     event: &NetworkConnectEvent,
     table: &mut ProcessTable,
+    detections: &[NetworkDetectionRule],
 ) -> Option<NormalizedEvent> {
     let (comm, exe_path, ppid) = enrich_from_table_or_comm(&event.header, table, &event.comm);
+    let (alert, detection_type) =
+        detect_for_network(NetworkDirection::Outbound, event.port, &comm, detections);
 
     Some(NormalizedEvent::NetworkConnect(NetworkConnect {
         pid: event.header.pid,
@@ -841,8 +858,8 @@ pub fn normalize_network_connect(
         socket_fd: event.socket_fd,
         remote_addr: network_addr(event.family, event.ipv4_addr, &event.ipv6_addr),
         remote_port: event.port,
-        alert: false,
-        detection_type: None,
+        alert,
+        detection_type,
         timestamp_ns: event.header.timestamp_ns,
     }))
 }
@@ -851,8 +868,11 @@ pub fn normalize_network_connect(
 pub fn normalize_network_bind(
     event: &NetworkBindEvent,
     table: &mut ProcessTable,
+    detections: &[NetworkDetectionRule],
 ) -> Option<NormalizedEvent> {
     let (comm, exe_path, ppid) = enrich_from_table_or_comm(&event.header, table, &event.comm);
+    let (alert, detection_type) =
+        detect_for_network(NetworkDirection::Inbound, event.port, &comm, detections);
 
     Some(NormalizedEvent::NetworkBind(NetworkBind {
         pid: event.header.pid,
@@ -866,8 +886,8 @@ pub fn normalize_network_bind(
         socket_fd: event.socket_fd,
         local_addr: network_addr(event.family, event.ipv4_addr, &event.ipv6_addr),
         local_port: event.port,
-        alert: false,
-        detection_type: None,
+        alert,
+        detection_type,
         timestamp_ns: event.header.timestamp_ns,
     }))
 }
@@ -876,8 +896,11 @@ pub fn normalize_network_bind(
 pub fn normalize_network_listen(
     event: &NetworkListenEvent,
     table: &mut ProcessTable,
+    detections: &[NetworkDetectionRule],
 ) -> Option<NormalizedEvent> {
     let (comm, exe_path, ppid) = enrich_from_table_or_comm(&event.header, table, &event.comm);
+    let (alert, detection_type) =
+        detect_for_network(NetworkDirection::Inbound, event.port, &comm, detections);
 
     Some(NormalizedEvent::NetworkListen(NetworkListen {
         pid: event.header.pid,
@@ -892,8 +915,8 @@ pub fn normalize_network_listen(
         local_addr: network_addr(event.family, event.ipv4_addr, &event.ipv6_addr),
         local_port: event.port,
         backlog: event.backlog,
-        alert: false,
-        detection_type: None,
+        alert,
+        detection_type,
         timestamp_ns: event.header.timestamp_ns,
     }))
 }
@@ -1093,7 +1116,7 @@ mod tests {
         table.update_from_exec(&make_exec_event(42, 42, 7, "/usr/bin/curl", "curl"));
         let event = make_network_connect_event(42, 42, "rawcurl");
 
-        let normalized = normalize_network_connect(&event, &mut table)
+        let normalized = normalize_network_connect(&event, &mut table, &[])
             .expect("network connect should be emitted");
 
         match normalized {
@@ -1115,7 +1138,7 @@ mod tests {
         let mut table = ProcessTable::new();
         let event = make_network_connect_event(999, 999, "nc");
 
-        let normalized = normalize_network_connect(&event, &mut table)
+        let normalized = normalize_network_connect(&event, &mut table, &[])
             .expect("network connect should be emitted");
 
         match normalized {
@@ -1123,6 +1146,32 @@ mod tests {
                 assert_eq!(net.ppid, 0);
                 assert_eq!(net.comm, "nc");
                 assert_eq!(net.exe_path, "");
+            }
+            other => panic!("expected NetworkConnect, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn network_connect_applies_suspicious_port_detection() {
+        let mut table = ProcessTable::new();
+        let event = make_network_connect_event(999, 999, "nc");
+        let rules = vec![NetworkDetectionRule {
+            name: "suspicious_outbound_port".to_string(),
+            directions: vec![NetworkDirection::Outbound],
+            ports: vec![4444],
+            process_names: vec![],
+        }];
+
+        let normalized = normalize_network_connect(&event, &mut table, &rules)
+            .expect("network connect should be emitted");
+
+        match normalized {
+            NormalizedEvent::NetworkConnect(net) => {
+                assert!(net.alert);
+                assert_eq!(
+                    net.detection_type,
+                    Some("suspicious_outbound_port".to_string())
+                );
             }
             other => panic!("expected NetworkConnect, got {:?}", other),
         }

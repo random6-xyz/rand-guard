@@ -74,6 +74,11 @@ name = "cron_modified"
 paths = ["/etc/cron.d/", "/etc/cron.daily/", "/etc/crontab"]
 operations = ["file_open", "file_write", "file_rename", "file_unlink"]
 
+[[detections.network]]
+name = "suspicious_outbound_port"
+directions = ["outbound"]
+ports = [4444, 1337, 31337]
+
 [output]
 type = "stdout" # stdout is supported by the current MVP runtime
 format = "json"

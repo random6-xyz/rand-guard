@@ -401,7 +401,7 @@ async fn main() -> anyhow::Result<()> {
                                 let event = unsafe {
                                     core::ptr::read_unaligned(bytes.as_ptr() as *const NetworkConnectEvent)
                                 };
-                                crate::normalize::normalize_network_connect(&event, &mut table)
+                                crate::normalize::normalize_network_connect(&event, &mut table, &config.detections.network)
                             } else {
                                 None
                             }
@@ -413,7 +413,7 @@ async fn main() -> anyhow::Result<()> {
                                 let event = unsafe {
                                     core::ptr::read_unaligned(bytes.as_ptr() as *const NetworkBindEvent)
                                 };
-                                crate::normalize::normalize_network_bind(&event, &mut table)
+                                crate::normalize::normalize_network_bind(&event, &mut table, &config.detections.network)
                             } else {
                                 None
                             }
@@ -425,7 +425,7 @@ async fn main() -> anyhow::Result<()> {
                                 let event = unsafe {
                                     core::ptr::read_unaligned(bytes.as_ptr() as *const NetworkListenEvent)
                                 };
-                                crate::normalize::normalize_network_listen(&event, &mut table)
+                                crate::normalize::normalize_network_listen(&event, &mut table, &config.detections.network)
                             } else {
                                 None
                             }

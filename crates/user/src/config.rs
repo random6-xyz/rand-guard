@@ -222,7 +222,7 @@ pub enum RuleAction {
     Alert,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NetworkDirection {
     Inbound,
@@ -263,6 +263,8 @@ pub struct PerformanceConfig {
 pub struct DetectionsConfig {
     #[serde(default)]
     pub persistence: Vec<PersistenceRule>,
+    #[serde(default)]
+    pub network: Vec<NetworkDetectionRule>,
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
@@ -273,6 +275,16 @@ pub struct PersistenceRule {
     #[serde(default)]
     pub patterns: Vec<String>,
     pub operations: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkDetectionRule {
+    pub name: String,
+    pub directions: Vec<NetworkDirection>,
+    pub ports: Vec<u16>,
+    #[serde(default)]
+    pub process_names: Vec<String>,
 }
 
 #[cfg(test)]
@@ -306,6 +318,16 @@ mod tests {
         );
         assert_eq!(config.rules[2].direction, Some(NetworkDirection::Outbound));
         assert_eq!(config.rules[2].ports, [4444, 1337, 31337]);
+        assert_eq!(config.detections.network.len(), 1);
+        assert_eq!(
+            config.detections.network[0].name,
+            "suspicious_outbound_port"
+        );
+        assert_eq!(
+            config.detections.network[0].directions,
+            [NetworkDirection::Outbound]
+        );
+        assert_eq!(config.detections.network[0].ports, [4444, 1337, 31337]);
         assert_eq!(config.output.output_type, OutputType::Stdout);
         assert_eq!(config.performance.max_events_per_second, 5000);
         config
