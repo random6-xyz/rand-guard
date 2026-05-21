@@ -11,8 +11,8 @@ use aya::{maps::ring_buf::RingBuf, programs::TracePoint};
 use edr_common::{
     EVENT_SCHEMA_VERSION, EventKind, ExecSyscallEvent, FileOpenAt2Event, FileOpenEvent,
     FilePWrite64Event, FileRenameAt2Event, FileRenameAtEvent, FileRenameEvent, FileUnlinkAtEvent,
-    FileUnlinkEvent, FileWriteEvent, FileWriteVEvent, ProcessExecEvent, ProcessExitEvent,
-    ProcessForkEvent,
+    FileUnlinkEvent, FileWriteEvent, FileWriteVEvent, NetworkBindEvent, NetworkConnectEvent,
+    NetworkListenEvent, ProcessExecEvent, ProcessExitEvent, ProcessForkEvent,
 };
 use tokio::io::unix::AsyncFd;
 use tokio::signal;
@@ -45,6 +45,8 @@ async fn main() -> anyhow::Result<()> {
         config.process.hooks.iter().map(|s| s.as_str()).collect();
     let file_hooks: std::collections::HashSet<&str> =
         config.file.hooks.iter().map(|s| s.as_str()).collect();
+    let network_hooks: std::collections::HashSet<&str> =
+        config.network.hooks.iter().map(|s| s.as_str()).collect();
 
     if process_hooks.contains("execve") {
         attach_tracepoint(
@@ -162,6 +164,28 @@ async fn main() -> anyhow::Result<()> {
                 "sys_enter_unlinkat",
                 "syscalls",
                 "sys_enter_unlinkat",
+            )?;
+        }
+    }
+
+    if config.events.network && config.network.enabled {
+        if network_hooks.contains("connect") {
+            attach_tracepoint(
+                &mut ebpf,
+                "sys_enter_connect",
+                "syscalls",
+                "sys_enter_connect",
+            )?;
+        }
+        if network_hooks.contains("bind") {
+            attach_tracepoint(&mut ebpf, "sys_enter_bind", "syscalls", "sys_enter_bind")?;
+        }
+        if network_hooks.contains("listen") {
+            attach_tracepoint(
+                &mut ebpf,
+                "sys_enter_listen",
+                "syscalls",
+                "sys_enter_listen",
             )?;
         }
     }
@@ -369,6 +393,36 @@ async fn main() -> anyhow::Result<()> {
                             } else {
                                 None
                             }
+                        }
+                        k if k == EventKind::NetworkConnect.as_u16() => {
+                            if bytes.len() >= core::mem::size_of::<NetworkConnectEvent>()
+                                && header.size as usize == core::mem::size_of::<NetworkConnectEvent>()
+                            {
+                                let _event = unsafe {
+                                    core::ptr::read_unaligned(bytes.as_ptr() as *const NetworkConnectEvent)
+                                };
+                            }
+                            None
+                        }
+                        k if k == EventKind::NetworkBind.as_u16() => {
+                            if bytes.len() >= core::mem::size_of::<NetworkBindEvent>()
+                                && header.size as usize == core::mem::size_of::<NetworkBindEvent>()
+                            {
+                                let _event = unsafe {
+                                    core::ptr::read_unaligned(bytes.as_ptr() as *const NetworkBindEvent)
+                                };
+                            }
+                            None
+                        }
+                        k if k == EventKind::NetworkListen.as_u16() => {
+                            if bytes.len() >= core::mem::size_of::<NetworkListenEvent>()
+                                && header.size as usize == core::mem::size_of::<NetworkListenEvent>()
+                            {
+                                let _event = unsafe {
+                                    core::ptr::read_unaligned(bytes.as_ptr() as *const NetworkListenEvent)
+                                };
+                            }
+                            None
                         }
                         _ => None,
                     };
