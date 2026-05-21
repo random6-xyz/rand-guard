@@ -21,13 +21,18 @@ For each detection, define:
 
 ## Project Priorities
 
-Build visibility in this order:
+Current runtime status:
 
-1. process execution and lifecycle
-2. file and persistence-sensitive path visibility
-3. network connect/listen visibility
-4. simple rule engine
-5. scenario detections
+- Process lifecycle telemetry is implemented for exec, fork, exit, and execveat correlation.
+- File telemetry is implemented for open, write, rename, and unlink syscall families, with watch/exclude filters.
+- Built-in persistence detections are configured under `[[detections.persistence]]` and evaluated in userspace.
+- Network telemetry and enabled generic `[[rules]]` are currently rejected by runtime validation.
+
+Next visibility and detection priorities:
+
+1. network connect/listen visibility
+2. generic rule engine MVP beyond built-in persistence checks
+3. scenario detections
 
 ## Scenario Candidates
 
@@ -41,7 +46,8 @@ Build visibility in this order:
 
 ## Rule Engine Guidance
 
-- Start with built-in Rust rules before designing a user-facing rule language.
+- Extend built-in Rust detections before designing a user-facing rule language.
+- Do not assume `[[rules]]` is active at runtime; enabled rules currently fail validation.
 - Keep rules explainable and tied to available fields.
 - Prefer normalized EDR events over raw syscall records.
 - Include false-positive notes in docs and tests where practical.

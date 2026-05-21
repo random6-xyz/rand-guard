@@ -4,17 +4,20 @@
 
 This project is a Rust eBPF EDR built for deep systems/security study. Prioritize a small, correct, explainable EDR pipeline over broad but shallow feature coverage.
 
-The current near-term goal is a minimum end-to-end EDR loop:
+The current working slice is a minimum end-to-end EDR loop:
 
-- collect kernel events with eBPF
-- deliver events to userspace safely
-- normalize events into stable Rust structs
-- output observable results for tests, demos, and future detection rules
+- collect process lifecycle and selected file events with eBPF tracepoints
+- deliver events to userspace through the `EVENTS` ring buffer
+- normalize events into stable Rust structs and enrich them with a userspace process table
+- output newline-delimited JSON for tests, demos, and future detection rules
+- apply built-in persistence-sensitive file detections from `[[detections.persistence]]`
+
+Network telemetry and generic `[[rules]]` evaluation are not implemented in the current runtime. Configs may describe them, but enabling network collection or enabled rules should fail validation until those slices are built.
 
 ## Repository Shape
 
 - `crates/ebpf`: no_std eBPF programs using Aya. Keep verifier constraints, bounded memory access, and small stack usage in mind.
-- `crates/user`: userspace loader/runtime using Aya and Tokio. Owns config loading, privilege checks, event consumption, enrichment, output, and shutdown.
+- `crates/user`: userspace loader/runtime using Aya and Tokio. Owns config loading, privilege checks, ring-buffer event consumption, normalization/enrichment, persistence detections, JSON output, and shutdown.
 - `crates/common`: shared kernel/userspace event schemas. Types crossing the eBPF/userspace boundary must be ABI-stable and `#[repr(C)]`.
 - `xtask`: project automation for build, check, clippy, test, run, and CI smoke workflows.
 
@@ -38,7 +41,7 @@ The current near-term goal is a minimum end-to-end EDR loop:
 
 ## Userspace Rules
 
-- Userspace owns config, logging, graceful shutdown, output formatting, enrichment, rule matching, and demo-friendly reporting.
+- Userspace owns config, logging, graceful shutdown, output formatting, enrichment, built-in detection matching, and demo-friendly reporting.
 - Runtime errors should include context with `anyhow::Context` where it helps debugging.
 - CI smoke behavior must stay deterministic and short.
 - Avoid hiding privilege requirements. Loading eBPF generally requires root or appropriate capabilities.
@@ -47,10 +50,10 @@ The current near-term goal is a minimum end-to-end EDR loop:
 
 Build visibility before detection breadth:
 
-1. process execution and lifecycle
-2. file and persistence-sensitive path visibility
+1. process execution and lifecycle: implemented with exec, fork, exit, and execveat correlation
+2. file and persistence-sensitive path visibility: implemented for open, write, rename, and unlink families
 3. network connection/listen visibility
-4. rule engine MVP
+4. generic rule engine MVP beyond the current built-in persistence detections
 5. scenario-based detections such as reverse shell, web shell execution, credential access, systemd persistence, and drop-and-execute
 
 Detection work should include:

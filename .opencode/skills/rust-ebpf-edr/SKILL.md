@@ -11,7 +11,13 @@ Use this skill for implementation work that touches the Rust eBPF telemetry pipe
 
 - `crates/ebpf` collects minimal kernel telemetry.
 - `crates/common` defines the ABI between eBPF and userspace.
-- `crates/user` loads programs, consumes maps, enriches events, handles config/output, and applies detections.
+- `crates/user` loads programs, consumes the `EVENTS` ring buffer, enriches events, handles config/output, and applies built-in detections.
+
+Current runtime support:
+
+- Process hooks: `execve`, `execveat`, `fork`, `exit`.
+- File hooks: `openat`, `openat2`, `write`, `writev`, `pwrite64`, `rename`, `renameat`, `renameat2`, `unlink`, `unlinkat`.
+- Network event collection and enabled generic `[[rules]]` are not supported yet.
 
 ## eBPF Constraints
 
