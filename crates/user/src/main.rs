@@ -398,31 +398,37 @@ async fn main() -> anyhow::Result<()> {
                             if bytes.len() >= core::mem::size_of::<NetworkConnectEvent>()
                                 && header.size as usize == core::mem::size_of::<NetworkConnectEvent>()
                             {
-                                let _event = unsafe {
+                                let event = unsafe {
                                     core::ptr::read_unaligned(bytes.as_ptr() as *const NetworkConnectEvent)
                                 };
+                                crate::normalize::normalize_network_connect(&event, &mut table)
+                            } else {
+                                None
                             }
-                            None
                         }
                         k if k == EventKind::NetworkBind.as_u16() => {
                             if bytes.len() >= core::mem::size_of::<NetworkBindEvent>()
                                 && header.size as usize == core::mem::size_of::<NetworkBindEvent>()
                             {
-                                let _event = unsafe {
+                                let event = unsafe {
                                     core::ptr::read_unaligned(bytes.as_ptr() as *const NetworkBindEvent)
                                 };
+                                crate::normalize::normalize_network_bind(&event, &mut table)
+                            } else {
+                                None
                             }
-                            None
                         }
                         k if k == EventKind::NetworkListen.as_u16() => {
                             if bytes.len() >= core::mem::size_of::<NetworkListenEvent>()
                                 && header.size as usize == core::mem::size_of::<NetworkListenEvent>()
                             {
-                                let _event = unsafe {
+                                let event = unsafe {
                                     core::ptr::read_unaligned(bytes.as_ptr() as *const NetworkListenEvent)
                                 };
+                                crate::normalize::normalize_network_listen(&event, &mut table)
+                            } else {
+                                None
                             }
-                            None
                         }
                         _ => None,
                     };

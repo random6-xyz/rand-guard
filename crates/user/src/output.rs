@@ -4,8 +4,8 @@ use anyhow::Context;
 
 use crate::normalize::{
     FileOpen, FileOpenAt2, FilePWrite64, FileRename, FileRenameAt, FileRenameAt2, FileUnlink,
-    FileUnlinkAt, FileWrite, FileWriteV, NormalizedEvent, ProcessExit, ProcessRelationship,
-    ProcessStart,
+    FileUnlinkAt, FileWrite, FileWriteV, NetworkBind, NetworkConnect, NetworkListen,
+    NormalizedEvent, ProcessExit, ProcessRelationship, ProcessStart,
 };
 
 pub struct JsonOutput<W> {
@@ -49,6 +49,9 @@ pub fn format_normalized_event_json(event: &NormalizedEvent) -> String {
         NormalizedEvent::FileRenameAt2(file) => format_file_renameat2_json(file),
         NormalizedEvent::FileUnlink(file) => format_file_unlink_json(file),
         NormalizedEvent::FileUnlinkAt(file) => format_file_unlinkat_json(file),
+        NormalizedEvent::NetworkConnect(net) => format_network_connect_json(net),
+        NormalizedEvent::NetworkBind(net) => format_network_bind_json(net),
+        NormalizedEvent::NetworkListen(net) => format_network_listen_json(net),
     }
 }
 
@@ -295,6 +298,70 @@ fn format_file_unlinkat_json(file: &FileUnlinkAt) -> String {
         "filename_truncated": file.filename_truncated,
         "alert": file.alert,
         "detection_type": file.detection_type,
+    })
+    .to_string()
+}
+
+fn format_network_connect_json(net: &NetworkConnect) -> String {
+    serde_json::json!({
+        "event_type": "network_connect",
+        "timestamp_ns": net.timestamp_ns,
+        "pid": net.pid,
+        "tid": net.tid,
+        "ppid": net.ppid,
+        "uid": net.uid,
+        "gid": net.gid,
+        "comm": net.comm,
+        "exe_path": net.exe_path,
+        "family": net.family,
+        "socket_fd": net.socket_fd,
+        "remote_addr": net.remote_addr,
+        "remote_port": net.remote_port,
+        "alert": net.alert,
+        "detection_type": net.detection_type,
+    })
+    .to_string()
+}
+
+fn format_network_bind_json(net: &NetworkBind) -> String {
+    serde_json::json!({
+        "event_type": "network_bind",
+        "timestamp_ns": net.timestamp_ns,
+        "pid": net.pid,
+        "tid": net.tid,
+        "ppid": net.ppid,
+        "uid": net.uid,
+        "gid": net.gid,
+        "comm": net.comm,
+        "exe_path": net.exe_path,
+        "family": net.family,
+        "socket_fd": net.socket_fd,
+        "local_addr": net.local_addr,
+        "local_port": net.local_port,
+        "alert": net.alert,
+        "detection_type": net.detection_type,
+    })
+    .to_string()
+}
+
+fn format_network_listen_json(net: &NetworkListen) -> String {
+    serde_json::json!({
+        "event_type": "network_listen",
+        "timestamp_ns": net.timestamp_ns,
+        "pid": net.pid,
+        "tid": net.tid,
+        "ppid": net.ppid,
+        "uid": net.uid,
+        "gid": net.gid,
+        "comm": net.comm,
+        "exe_path": net.exe_path,
+        "family": net.family,
+        "socket_fd": net.socket_fd,
+        "local_addr": net.local_addr,
+        "local_port": net.local_port,
+        "backlog": net.backlog,
+        "alert": net.alert,
+        "detection_type": net.detection_type,
     })
     .to_string()
 }
@@ -640,6 +707,76 @@ mod tests {
             assert_eq!(value["event_type"], event_type);
             assert_eq!(value[field], expected);
         }
+    }
+
+    #[test]
+    fn formats_network_events_as_json() {
+        let connect = NormalizedEvent::NetworkConnect(NetworkConnect {
+            pid: 10,
+            tid: 11,
+            ppid: 1,
+            uid: 1000,
+            gid: 1000,
+            comm: "nc".to_string(),
+            exe_path: "/usr/bin/nc".to_string(),
+            family: "ipv4".to_string(),
+            socket_fd: 3,
+            remote_addr: "127.0.0.1".to_string(),
+            remote_port: 4444,
+            alert: true,
+            detection_type: Some("suspicious_outbound_port".to_string()),
+            timestamp_ns: 200,
+        });
+        let value: serde_json::Value =
+            serde_json::from_str(&format_normalized_event_json(&connect))
+                .expect("network connect output should be valid JSON");
+        assert_eq!(value["event_type"], "network_connect");
+        assert_eq!(value["remote_addr"], "127.0.0.1");
+        assert_eq!(value["remote_port"], 4444);
+        assert_eq!(value["alert"], true);
+
+        let bind = NormalizedEvent::NetworkBind(NetworkBind {
+            pid: 10,
+            tid: 11,
+            ppid: 1,
+            uid: 1000,
+            gid: 1000,
+            comm: "nc".to_string(),
+            exe_path: "/usr/bin/nc".to_string(),
+            family: "ipv4".to_string(),
+            socket_fd: 3,
+            local_addr: "0.0.0.0".to_string(),
+            local_port: 4444,
+            alert: false,
+            detection_type: None,
+            timestamp_ns: 201,
+        });
+        let value: serde_json::Value = serde_json::from_str(&format_normalized_event_json(&bind))
+            .expect("network bind output should be valid JSON");
+        assert_eq!(value["event_type"], "network_bind");
+        assert_eq!(value["local_port"], 4444);
+
+        let listen = NormalizedEvent::NetworkListen(NetworkListen {
+            pid: 10,
+            tid: 11,
+            ppid: 1,
+            uid: 1000,
+            gid: 1000,
+            comm: "nc".to_string(),
+            exe_path: "/usr/bin/nc".to_string(),
+            family: "unknown".to_string(),
+            socket_fd: 3,
+            local_addr: "".to_string(),
+            local_port: 0,
+            backlog: 128,
+            alert: false,
+            detection_type: None,
+            timestamp_ns: 202,
+        });
+        let value: serde_json::Value = serde_json::from_str(&format_normalized_event_json(&listen))
+            .expect("network listen output should be valid JSON");
+        assert_eq!(value["event_type"], "network_listen");
+        assert_eq!(value["backlog"], 128);
     }
 
     fn sample_process_start() -> ProcessStart {

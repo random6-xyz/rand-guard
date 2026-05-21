@@ -1,8 +1,8 @@
 use edr_common::{
     EVENT_FLAG_FILENAME_TRUNCATED, ExecSyscallEvent, FileOpenAt2Event, FileOpenEvent,
     FilePWrite64Event, FileRenameAt2Event, FileRenameAtEvent, FileRenameEvent, FileUnlinkAtEvent,
-    FileUnlinkEvent, FileWriteEvent, FileWriteVEvent, ProcessExecEvent, ProcessExitEvent,
-    ProcessForkEvent,
+    FileUnlinkEvent, FileWriteEvent, FileWriteVEvent, NetworkBindEvent, NetworkConnectEvent,
+    NetworkFamily, NetworkListenEvent, ProcessExecEvent, ProcessExitEvent, ProcessForkEvent,
 };
 
 use crate::config::{FileConfig, PersistenceRule};
@@ -27,6 +27,9 @@ pub enum NormalizedEvent {
     FileRenameAt2(FileRenameAt2),
     FileUnlink(FileUnlink),
     FileUnlinkAt(FileUnlinkAt),
+    NetworkConnect(NetworkConnect),
+    NetworkBind(NetworkBind),
+    NetworkListen(NetworkListen),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -239,6 +242,61 @@ pub struct FileUnlinkAt {
     pub timestamp_ns: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NetworkConnect {
+    pub pid: u32,
+    pub tid: u32,
+    pub ppid: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub comm: String,
+    pub exe_path: String,
+    pub family: String,
+    pub socket_fd: i32,
+    pub remote_addr: String,
+    pub remote_port: u16,
+    pub alert: bool,
+    pub detection_type: Option<String>,
+    pub timestamp_ns: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NetworkBind {
+    pub pid: u32,
+    pub tid: u32,
+    pub ppid: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub comm: String,
+    pub exe_path: String,
+    pub family: String,
+    pub socket_fd: i32,
+    pub local_addr: String,
+    pub local_port: u16,
+    pub alert: bool,
+    pub detection_type: Option<String>,
+    pub timestamp_ns: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NetworkListen {
+    pub pid: u32,
+    pub tid: u32,
+    pub ppid: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub comm: String,
+    pub exe_path: String,
+    pub family: String,
+    pub socket_fd: i32,
+    pub local_addr: String,
+    pub local_port: u16,
+    pub backlog: i32,
+    pub alert: bool,
+    pub detection_type: Option<String>,
+    pub timestamp_ns: u64,
+}
+
 /// Convert a raw `sched_process_exec` record into a normalized `ProcessStart`.
 pub fn normalize_exec(event: &ProcessExecEvent, table: &mut ProcessTable) -> NormalizedEvent {
     let record = table.update_from_exec(event);
@@ -365,6 +423,37 @@ fn enrich_from_table(
         (record.comm.clone(), record.exe_path.clone(), record.ppid)
     } else {
         (String::new(), String::new(), 0)
+    }
+}
+
+fn enrich_from_table_or_comm(
+    header: &edr_common::EventHeader,
+    table: &ProcessTable,
+    raw_comm: &[u8],
+) -> (String, String, u32) {
+    if let Some(record) = table.get(&(header.pid, header.tid)) {
+        (record.comm.clone(), record.exe_path.clone(), record.ppid)
+    } else {
+        (fixed_string(raw_comm, raw_comm.len()), String::new(), 0)
+    }
+}
+
+fn network_family(family: u16) -> String {
+    match family {
+        f if f == NetworkFamily::Ipv4 as u16 => "ipv4".to_string(),
+        f if f == NetworkFamily::Ipv6 as u16 => "ipv6".to_string(),
+        _ => "unknown".to_string(),
+    }
+}
+
+fn network_addr(family: u16, ipv4_addr: u32, ipv6_addr: &[u8; 16]) -> String {
+    if family == NetworkFamily::Ipv4 as u16 {
+        let octets = ipv4_addr.to_be_bytes();
+        format!("{}.{}.{}.{}", octets[0], octets[1], octets[2], octets[3])
+    } else if family == NetworkFamily::Ipv6 as u16 {
+        std::net::Ipv6Addr::from(*ipv6_addr).to_string()
+    } else {
+        String::new()
     }
 }
 
@@ -733,12 +822,88 @@ pub fn normalize_file_unlinkat(
     }))
 }
 
+/// Convert a raw `sys_enter_connect` record into a normalized network event.
+pub fn normalize_network_connect(
+    event: &NetworkConnectEvent,
+    table: &mut ProcessTable,
+) -> Option<NormalizedEvent> {
+    let (comm, exe_path, ppid) = enrich_from_table_or_comm(&event.header, table, &event.comm);
+
+    Some(NormalizedEvent::NetworkConnect(NetworkConnect {
+        pid: event.header.pid,
+        tid: event.header.tid,
+        ppid,
+        uid: event.header.uid,
+        gid: event.header.gid,
+        comm,
+        exe_path,
+        family: network_family(event.family),
+        socket_fd: event.socket_fd,
+        remote_addr: network_addr(event.family, event.ipv4_addr, &event.ipv6_addr),
+        remote_port: event.port,
+        alert: false,
+        detection_type: None,
+        timestamp_ns: event.header.timestamp_ns,
+    }))
+}
+
+/// Convert a raw `sys_enter_bind` record into a normalized network event.
+pub fn normalize_network_bind(
+    event: &NetworkBindEvent,
+    table: &mut ProcessTable,
+) -> Option<NormalizedEvent> {
+    let (comm, exe_path, ppid) = enrich_from_table_or_comm(&event.header, table, &event.comm);
+
+    Some(NormalizedEvent::NetworkBind(NetworkBind {
+        pid: event.header.pid,
+        tid: event.header.tid,
+        ppid,
+        uid: event.header.uid,
+        gid: event.header.gid,
+        comm,
+        exe_path,
+        family: network_family(event.family),
+        socket_fd: event.socket_fd,
+        local_addr: network_addr(event.family, event.ipv4_addr, &event.ipv6_addr),
+        local_port: event.port,
+        alert: false,
+        detection_type: None,
+        timestamp_ns: event.header.timestamp_ns,
+    }))
+}
+
+/// Convert a raw `sys_enter_listen` record into a normalized network event.
+pub fn normalize_network_listen(
+    event: &NetworkListenEvent,
+    table: &mut ProcessTable,
+) -> Option<NormalizedEvent> {
+    let (comm, exe_path, ppid) = enrich_from_table_or_comm(&event.header, table, &event.comm);
+
+    Some(NormalizedEvent::NetworkListen(NetworkListen {
+        pid: event.header.pid,
+        tid: event.header.tid,
+        ppid,
+        uid: event.header.uid,
+        gid: event.header.gid,
+        comm,
+        exe_path,
+        family: network_family(event.family),
+        socket_fd: event.socket_fd,
+        local_addr: network_addr(event.family, event.ipv4_addr, &event.ipv6_addr),
+        local_port: event.port,
+        backlog: event.backlog,
+        alert: false,
+        detection_type: None,
+        timestamp_ns: event.header.timestamp_ns,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use edr_common::{
-        EVENT_SCHEMA_VERSION, EventKind, ExecSource, ExecSyscallEvent, ProcessExecEvent,
-        ProcessExitEvent, ProcessForkEvent,
+        EVENT_SCHEMA_VERSION, EventKind, ExecSource, ExecSyscallEvent, NetworkConnectEvent,
+        NetworkFamily, ProcessExecEvent, ProcessExitEvent, ProcessForkEvent,
     };
 
     fn make_exec_event(
@@ -837,6 +1002,24 @@ mod tests {
         event
     }
 
+    fn make_network_connect_event(pid: u32, tid: u32, comm: &str) -> NetworkConnectEvent {
+        let mut event = NetworkConnectEvent::default();
+        event.header.kind = EventKind::NetworkConnect.as_u16();
+        event.header.version = EVENT_SCHEMA_VERSION;
+        event.header.size = NetworkConnectEvent::SIZE;
+        event.header.timestamp_ns = 6000;
+        event.header.pid = pid;
+        event.header.tid = tid;
+        event.header.uid = 1000;
+        event.header.gid = 1000;
+        event.comm[..comm.len()].copy_from_slice(comm.as_bytes());
+        event.family = NetworkFamily::Ipv4 as u16;
+        event.socket_fd = 3;
+        event.port = 4444;
+        event.ipv4_addr = u32::from_be_bytes([127, 0, 0, 1]);
+        event
+    }
+
     #[test]
     fn exec_normalizes_to_process_start() {
         let mut table = ProcessTable::new();
@@ -902,6 +1085,47 @@ mod tests {
 
         let ignored = make_file_open_event("/var/tmp/demo.txt");
         assert!(normalize_file_open(&ignored, &mut table, Some(&file_config()), &rules).is_none());
+    }
+
+    #[test]
+    fn network_connect_normalizes_with_enriched_process() {
+        let mut table = ProcessTable::new();
+        table.update_from_exec(&make_exec_event(42, 42, 7, "/usr/bin/curl", "curl"));
+        let event = make_network_connect_event(42, 42, "rawcurl");
+
+        let normalized = normalize_network_connect(&event, &mut table)
+            .expect("network connect should be emitted");
+
+        match normalized {
+            NormalizedEvent::NetworkConnect(net) => {
+                assert_eq!(net.ppid, 7);
+                assert_eq!(net.comm, "curl");
+                assert_eq!(net.exe_path, "/usr/bin/curl");
+                assert_eq!(net.family, "ipv4");
+                assert_eq!(net.remote_addr, "127.0.0.1");
+                assert_eq!(net.remote_port, 4444);
+                assert!(!net.alert);
+            }
+            other => panic!("expected NetworkConnect, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn network_connect_uses_raw_comm_when_process_unknown() {
+        let mut table = ProcessTable::new();
+        let event = make_network_connect_event(999, 999, "nc");
+
+        let normalized = normalize_network_connect(&event, &mut table)
+            .expect("network connect should be emitted");
+
+        match normalized {
+            NormalizedEvent::NetworkConnect(net) => {
+                assert_eq!(net.ppid, 0);
+                assert_eq!(net.comm, "nc");
+                assert_eq!(net.exe_path, "");
+            }
+            other => panic!("expected NetworkConnect, got {:?}", other),
+        }
     }
 
     #[test]
