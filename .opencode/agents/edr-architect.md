@@ -26,4 +26,4 @@ When proposing a feature, return:
 - validation strategy
 - portfolio/demo value
 
-Avoid over-design. Do not introduce distributed storage, plugin systems, or complex rule languages until network telemetry and the simple generic rule engine are working.
+Avoid over-design. Do not introduce distributed storage, plugin systems, or complex rule languages until the simple generic rule engine and missing network correlation slices are working.

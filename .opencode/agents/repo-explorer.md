@@ -16,7 +16,7 @@ Key areas to inspect:
 - `Cargo.toml` workspace membership
 - `crates/ebpf` for kernel programs, maps, hooks, and helper usage
 - `crates/common` for event schemas
-- `crates/user` for loader, async ring buffer consumption, normalization/enrichment, persistence detections, output, config, and shutdown
+- `crates/user` for loader, async ring buffer consumption, normalization/enrichment, built-in persistence and network detections, output, config, and shutdown
 - `xtask` for repeatable validation and CI behavior
 - `.github/workflows/ci.yml` for required checks
 

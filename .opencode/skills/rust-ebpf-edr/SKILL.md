@@ -17,7 +17,9 @@ Current runtime support:
 
 - Process hooks: `execve`, `execveat`, `fork`, `exit`.
 - File hooks: `openat`, `openat2`, `write`, `writev`, `pwrite64`, `rename`, `renameat`, `renameat2`, `unlink`, `unlinkat`.
-- Network event collection and enabled generic `[[rules]]` are not supported yet.
+- Network hooks: `connect`, `bind`, `listen` when both `[events].network` and `[network].enabled` are true.
+- DNS collection, payload collection, `accept`/`accept4`, socket lifecycle correlation, and listen-to-bind socket table enrichment are not supported yet.
+- Enabled generic `[[rules]]` are rejected by runtime validation until the rule engine is implemented.
 
 ## eBPF Constraints
 
