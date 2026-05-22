@@ -10,6 +10,7 @@ buffer_size = 8192
 [events]
 process = true
 file = true
+# Set both events.network and network.enabled to true to collect network syscall telemetry.
 network = false
 
 [process]
@@ -28,7 +29,7 @@ exclude_paths = ["/var/log", "/tmp", "/proc", "/sys"]
 
 [network]
 enabled = false
-hooks = ["connect"]
+hooks = ["connect", "bind", "listen"]
 collect_dns = false
 collect_payload = false
 
@@ -72,6 +73,11 @@ operations = ["file_open", "file_write", "file_rename", "file_unlink"]
 name = "cron_modified"
 paths = ["/etc/cron.d/", "/etc/cron.daily/", "/etc/crontab"]
 operations = ["file_open", "file_write", "file_rename", "file_unlink"]
+
+[[detections.network]]
+name = "suspicious_outbound_port"
+directions = ["outbound"]
+ports = [4444, 1337, 31337]
 
 [output]
 type = "stdout" # stdout is supported by the current MVP runtime

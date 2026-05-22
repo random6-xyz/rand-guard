@@ -56,6 +56,7 @@ impl Config {
             "unlink",
             "unlinkat",
         ];
+        let supported_network_hooks: &[&str] = &["connect", "bind", "listen"];
         for hook in &self.process.hooks {
             if !supported_process_hooks.contains(&hook.as_str()) {
                 anyhow::bail!(
@@ -83,8 +84,25 @@ impl Config {
         if self.file.enabled && !self.events.file {
             anyhow::bail!("file collection is enabled but file events are disabled");
         }
-        if self.events.network || self.network.enabled {
-            anyhow::bail!("network event collection is not supported by the current runtime");
+        for hook in &self.network.hooks {
+            if !supported_network_hooks.contains(&hook.as_str()) {
+                anyhow::bail!(
+                    "network hook '{}' is not supported by the current runtime",
+                    hook
+                );
+            }
+        }
+        if self.events.network && !self.network.enabled {
+            anyhow::bail!("network events are enabled but network collection is disabled");
+        }
+        if self.network.enabled && !self.events.network {
+            anyhow::bail!("network collection is enabled but network events are disabled");
+        }
+        if self.network.collect_dns {
+            anyhow::bail!("DNS collection is not supported by the current runtime");
+        }
+        if self.network.collect_payload {
+            anyhow::bail!("network payload collection is not supported by the current runtime");
         }
         if self.rules.iter().any(|rule| rule.enabled) {
             anyhow::bail!("detection rules are not supported by the current runtime");
@@ -204,7 +222,7 @@ pub enum RuleAction {
     Alert,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum NetworkDirection {
     Inbound,
@@ -245,6 +263,8 @@ pub struct PerformanceConfig {
 pub struct DetectionsConfig {
     #[serde(default)]
     pub persistence: Vec<PersistenceRule>,
+    #[serde(default)]
+    pub network: Vec<NetworkDetectionRule>,
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
@@ -255,6 +275,16 @@ pub struct PersistenceRule {
     #[serde(default)]
     pub patterns: Vec<String>,
     pub operations: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkDetectionRule {
+    pub name: String,
+    pub directions: Vec<NetworkDirection>,
+    pub ports: Vec<u16>,
+    #[serde(default)]
+    pub process_names: Vec<String>,
 }
 
 #[cfg(test)]
@@ -278,7 +308,7 @@ mod tests {
         assert!(!config.process.collect_env);
         assert!(!config.process.collect_cwd);
         assert_eq!(config.file.watch_paths, ["/etc", "/usr/bin", "/bin"]);
-        assert_eq!(config.network.hooks, ["connect"]);
+        assert_eq!(config.network.hooks, ["connect", "bind", "listen"]);
         assert_eq!(config.rules.len(), 3);
         assert!(config.rules.iter().all(|rule| !rule.enabled));
         assert_eq!(config.rules[0].rule_type, RuleType::Process);
@@ -288,6 +318,16 @@ mod tests {
         );
         assert_eq!(config.rules[2].direction, Some(NetworkDirection::Outbound));
         assert_eq!(config.rules[2].ports, [4444, 1337, 31337]);
+        assert_eq!(config.detections.network.len(), 1);
+        assert_eq!(
+            config.detections.network[0].name,
+            "suspicious_outbound_port"
+        );
+        assert_eq!(
+            config.detections.network[0].directions,
+            [NetworkDirection::Outbound]
+        );
+        assert_eq!(config.detections.network[0].ports, [4444, 1337, 31337]);
         assert_eq!(config.output.output_type, OutputType::Stdout);
         assert_eq!(config.performance.max_events_per_second, 5000);
         config
@@ -436,6 +476,79 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("file collection is enabled but file events are disabled")
+        );
+    }
+
+    #[test]
+    fn validates_supported_network_collection() {
+        let mut config = Config::from_str(include_str!("../../../config.example.toml"))
+            .expect("example config should parse");
+        config.events.network = true;
+        config.network.enabled = true;
+
+        config
+            .validate_current_runtime()
+            .expect("supported network hooks should validate when consistently enabled");
+    }
+
+    #[test]
+    fn rejects_unsupported_network_options() {
+        let mut config = Config::from_str(include_str!("../../../config.example.toml"))
+            .expect("example config should parse");
+        config.network.hooks.push("accept".to_string());
+
+        let err = config
+            .validate_current_runtime()
+            .expect_err("unsupported network hooks should be rejected");
+        assert!(
+            err.to_string()
+                .contains("network hook 'accept' is not supported")
+        );
+
+        let mut config = Config::from_str(include_str!("../../../config.example.toml"))
+            .expect("example config should parse");
+        config.network.collect_dns = true;
+        let err = config
+            .validate_current_runtime()
+            .expect_err("DNS collection should be rejected");
+        assert!(err.to_string().contains("DNS collection is not supported"));
+
+        let mut config = Config::from_str(include_str!("../../../config.example.toml"))
+            .expect("example config should parse");
+        config.network.collect_payload = true;
+        let err = config
+            .validate_current_runtime()
+            .expect_err("payload collection should be rejected");
+        assert!(
+            err.to_string()
+                .contains("network payload collection is not supported")
+        );
+    }
+
+    #[test]
+    fn rejects_inconsistent_network_event_flags() {
+        let mut config = Config::from_str(include_str!("../../../config.example.toml"))
+            .expect("example config should parse");
+        config.events.network = true;
+
+        let err = config
+            .validate_current_runtime()
+            .expect_err("enabled network events should require network collection");
+        assert!(
+            err.to_string()
+                .contains("network events are enabled but network collection is disabled")
+        );
+
+        let mut config = Config::from_str(include_str!("../../../config.example.toml"))
+            .expect("example config should parse");
+        config.network.enabled = true;
+
+        let err = config
+            .validate_current_runtime()
+            .expect_err("enabled network collection should require network events");
+        assert!(
+            err.to_string()
+                .contains("network collection is enabled but network events are disabled")
         );
     }
 

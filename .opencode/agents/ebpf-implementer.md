@@ -12,6 +12,7 @@ Use these priorities:
 - Keep `crates/ebpf` `no_std`, allocation-free, and simple enough for the eBPF verifier.
 - Keep shared event schemas in `crates/common` with `#[repr(C)]`, fixed-size fields, and explicit truncation behavior.
 - Keep policy, enrichment, formatting, and detection logic in `crates/user` unless kernel filtering is required.
+- Treat process, file, and opt-in `connect`/`bind`/`listen` network telemetry as the implemented baseline; enabled generic `[[rules]]` still need implementation.
 - Prefer ring buffer event delivery for MVP telemetry.
 - Add or update `xtask` automation only when it improves repeatable local or CI workflows.
 

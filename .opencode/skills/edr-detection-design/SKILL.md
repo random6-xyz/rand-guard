@@ -21,13 +21,20 @@ For each detection, define:
 
 ## Project Priorities
 
-Build visibility in this order:
+Current runtime status:
 
-1. process execution and lifecycle
-2. file and persistence-sensitive path visibility
-3. network connect/listen visibility
-4. simple rule engine
-5. scenario detections
+- Process lifecycle telemetry is implemented for exec, fork, exit, and execveat correlation.
+- File telemetry is implemented for open, write, rename, and unlink syscall families, with watch/exclude filters.
+- Built-in persistence detections are configured under `[[detections.persistence]]` and evaluated in userspace.
+- Network telemetry is implemented for opt-in `connect`, `bind`, and `listen` syscall tracepoints.
+- Built-in network detections are configured under `[[detections.network]]` and currently match direction plus port, with optional process-name filters.
+- DNS collection, payload collection, `accept`/`accept4`, socket lifecycle correlation, listen-to-bind enrichment, and enabled generic `[[rules]]` are still unsupported.
+
+Next visibility and detection priorities:
+
+1. generic rule engine MVP beyond built-in persistence and network checks
+2. network correlation and richer listener context
+3. scenario detections
 
 ## Scenario Candidates
 
@@ -38,10 +45,12 @@ Build visibility in this order:
 - cron persistence
 - suspicious binary drop and execute
 - unexpected outbound connection from unusual process ancestry
+- suspicious inbound listener on uncommon administration or shell ports
 
 ## Rule Engine Guidance
 
-- Start with built-in Rust rules before designing a user-facing rule language.
+- Extend built-in Rust detections before designing a user-facing rule language.
+- Do not assume `[[rules]]` is active at runtime; enabled rules currently fail validation.
 - Keep rules explainable and tied to available fields.
 - Prefer normalized EDR events over raw syscall records.
 - Include false-positive notes in docs and tests where practical.
