@@ -7,7 +7,7 @@ The current agent can collect process, file, and opt-in network syscall telemetr
 ## Current Capabilities
 
 - Process lifecycle visibility for `execve`, `execveat`, `fork`, and `exit`.
-- File visibility for open, write, rename, and unlink syscall families.
+- File visibility for open (`openat`, `openat2`), write (`write`, `writev`, `pwrite64`), rename (`rename`, `renameat`, `renameat2`), and unlink (`unlink`, `unlinkat`) syscall families.
 - Network visibility for `connect`, `bind`, and `listen` syscall tracepoints when explicitly enabled.
 - Shared ABI in `crates/common` using fixed-layout `#[repr(C)]` structs.
 - eBPF to userspace delivery through the `EVENTS` ring buffer.
@@ -23,7 +23,7 @@ The current agent can collect process, file, and opt-in network syscall telemetr
 - Rule matching is intentionally simple: no expression DSL, regex, multi-event correlation, or time windows yet.
 - Network collection supports only `connect`, `bind`, and `listen`.
 - DNS collection, payload collection, `accept`/`accept4`, and socket lifecycle correlation are not implemented.
-- `listen` events currently include `fd` and `backlog`; local address/port require future bind-to-listen correlation.
+- `listen` events include `socket_fd`, `backlog`, `local_addr`, and `local_port` parsed directly from the syscall.
 - Runtime output is stdout JSON only.
 - Loading eBPF programs requires root or sufficient Linux capabilities such as `CAP_BPF` and `CAP_PERFMON` on supported kernels.
 
@@ -97,6 +97,8 @@ collect_dns = false
 collect_payload = false
 ```
 
+Supported file hooks: `openat`, `openat2`, `write`, `writev`, `pwrite64`, `rename`, `renameat`, `renameat2`, `unlink`, `unlinkat`.
+
 Enable network collection manually by setting both flags:
 
 ```toml
@@ -124,45 +126,52 @@ paths = ["/etc/passwd", "/etc/shadow", "/etc/sudoers"]
 operations = ["file_open", "file_write", "file_unlink", "file_rename"]
 ```
 
-Process rules match `process_names` and/or `parent_names`. File rules match `paths`, optional `patterns`, and canonical operations. Network rules match `direction`, `ports`, and optional `process_names`.
+Process rules match `process_names` and/or `parent_names`. File rules match `paths`, optional `patterns`, and canonical operations. Network rules match `direction`, `ports`, and optional `process_names`. File rules also accept short operation aliases (`open`, `write`, `rename`, `unlink`) and a `*` wildcard.
 
 ## Output
 
 The agent writes one JSON object per line. Process events look like:
 
 ```json
-{"event_type":"process_start","pid":100,"tid":100,"ppid":1,"comm":"bash","exe_path":"/usr/bin/bash","source":"execve","timestamp_ns":123}
+{"event_type":"process_start","timestamp_ns":123,"pid":100,"tid":100,"ppid":1,"uid":0,"gid":0,"comm":"bash","exe_path":"/usr/bin/bash","source":"execve","filename_truncated":false}
 ```
 
-File detections still include legacy event-local alert fields:
+File events include detection fields when a built-in persistence rule matches:
 
 ```json
-{"event_type":"file_open","pid":100,"filename":"/etc/systemd/system/demo.service","alert":true,"detection_type":"systemd_service_modified"}
+{"event_type":"file_open","timestamp_ns":123,"pid":100,"tid":100,"ppid":1,"uid":0,"gid":0,"comm":"systemctl","exe_path":"/usr/bin/systemctl","filename":"/etc/systemd/system/demo.service","flags":64,"filename_truncated":false,"alert":true,"detection_type":"systemd_service_modified"}
 ```
 
 Network events include connection or listener metadata:
 
 ```json
-{"event_type":"network_connect","pid":100,"comm":"nc","family":"ipv4","socket_fd":3,"remote_addr":"127.0.0.1","remote_port":4444,"alert":true,"detection_type":"suspicious_outbound_port"}
+{"event_type":"network_connect","timestamp_ns":123,"pid":100,"tid":100,"ppid":1,"uid":1000,"gid":1000,"comm":"nc","exe_path":"/usr/bin/nc","family":"ipv4","socket_fd":3,"remote_addr":"127.0.0.1","remote_port":4444,"alert":true,"detection_type":"suspicious_outbound_port"}
+```
+
+Listen events include local address, port, and backlog:
+
+```json
+{"event_type":"network_listen","timestamp_ns":123,"pid":100,"tid":100,"ppid":1,"uid":0,"gid":0,"comm":"nc","exe_path":"/usr/bin/nc","family":"ipv4","socket_fd":3,"local_addr":"0.0.0.0","local_port":4444,"backlog":128,"alert":false,"detection_type":null}
 ```
 
 Rule matches emit a separate stable alert event immediately after the source telemetry event:
 
 ```json
-{"event_type":"alert","timestamp_ns":123,"rule_id":"FILE-001","rule_name":"Sensitive file touched","rule_type":"file","severity":"high","action":"alert","source_event_type":"file_write","pid":100,"tid":100,"ppid":1,"uid":0,"gid":0,"comm":"bash","exe_path":"/usr/bin/bash","path":"/etc/shadow","operation":"file_write"}
+{"event_type":"alert","timestamp_ns":123,"rule_id":"FILE-001","rule_name":"Sensitive file touched","rule_type":"file","severity":"high","action":"alert","source_event_type":"file_write","pid":100,"tid":100,"ppid":1,"uid":0,"gid":0,"comm":"bash","exe_path":"/usr/bin/bash","process_name":"bash","parent_name":null,"path":"/etc/shadow","operation":"file_write","direction":null,"port":null,"addr":null,"family":null}
 ```
 
 ## Built-In Detections
 
 Persistence detections are configured under `[[detections.persistence]]` and match canonical operations such as `file_open`, `file_write`, `file_rename`, and `file_unlink`.
 
-Network detections are configured under `[[detections.network]]` and currently match direction plus port:
+Network detections are configured under `[[detections.network]]` and currently match direction plus port, with optional process name filtering:
 
 ```toml
 [[detections.network]]
 name = "suspicious_outbound_port"
 directions = ["outbound"]
 ports = [4444, 1337, 31337]
+# process_names = ["nc", "ncat"]  # optional: restrict to specific processes
 ```
 
 Expected false positives include netcat labs, CTF tooling, debug listeners, local tunnels, and remote shell experiments.

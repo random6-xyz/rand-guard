@@ -28,13 +28,13 @@ Current runtime status:
 - Built-in persistence detections are configured under `[[detections.persistence]]` and evaluated in userspace.
 - Network telemetry is implemented for opt-in `connect`, `bind`, and `listen` syscall tracepoints.
 - Built-in network detections are configured under `[[detections.network]]` and currently match direction plus port, with optional process-name filters.
-- DNS collection, payload collection, `accept`/`accept4`, socket lifecycle correlation, listen-to-bind enrichment, and enabled generic `[[rules]]` are still unsupported.
+- DNS collection, payload collection, `accept`/`accept4`, socket lifecycle correlation, listen-to-bind enrichment, and multi-event correlation are still unsupported.
 
 Next visibility and detection priorities:
 
-1. generic rule engine MVP beyond built-in persistence and network checks
-2. network correlation and richer listener context
-3. scenario detections
+1. network correlation and richer listener context
+2. scenario detections (reverse shell, web shell, credential access, persistence)
+3. rule engine extensions (regex, time windows, multi-event correlation)
 
 ## Scenario Candidates
 
@@ -50,7 +50,7 @@ Next visibility and detection priorities:
 ## Rule Engine Guidance
 
 - Extend built-in Rust detections before designing a user-facing rule language.
-- Do not assume `[[rules]]` is active at runtime; enabled rules currently fail validation.
+- Generic `[[rules]]` are evaluated in userspace as an MVP rule engine over normalized events.
 - Keep rules explainable and tied to available fields.
 - Prefer normalized EDR events over raw syscall records.
 - Include false-positive notes in docs and tests where practical.

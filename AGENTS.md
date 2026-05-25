@@ -14,6 +14,7 @@ The current working slice is a minimum end-to-end EDR loop:
 - apply built-in persistence-sensitive file detections from `[[detections.persistence]]`
 - apply built-in suspicious network port detections from `[[detections.network]]`
 - emit separate `event_type = "alert"` records for matching MVP `[[rules]]` and first built-in rule-engine rules
+- apply optional `process_names` filtering to network detection rules
 
 Generic `[[rules]]` evaluation is implemented as an MVP userspace rule engine over normalized events. Enabled `process`, `file`, and `network` rules are supported when they use the current simple matcher fields.
 
@@ -57,7 +58,7 @@ Network collection is implemented for `connect`, `bind`, and `listen` syscall tr
 Build visibility before detection breadth:
 
 1. process execution and lifecycle: implemented with exec, fork, exit, and execveat correlation
-2. file and persistence-sensitive path visibility: implemented for open, write, rename, and unlink families
+2. file and persistence-sensitive path visibility: implemented for open (`openat`, `openat2`), write (`write`, `writev`, `pwrite64`), rename (`rename`, `renameat`, `renameat2`), and unlink (`unlink`, `unlinkat`) families
 3. network connection/listen visibility: implemented for connect, bind, and listen syscall families
 4. generic rule engine MVP beyond the current built-in persistence and network detections: implemented for single-event process/file/network matches
 5. scenario-based detections such as reverse shell, web shell execution, credential access, systemd persistence, and drop-and-execute

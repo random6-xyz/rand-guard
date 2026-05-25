@@ -1,5 +1,5 @@
 ---
-description: Designs the Rust eBPF EDR roadmap, event schemas, data flow, built-in detections, future rule engine, and portfolio-friendly documentation.
+description: Designs the Rust eBPF EDR roadmap, event schemas, data flow, built-in detections, rule engine extensions, and portfolio-friendly documentation.
 mode: subagent
 permission:
   edit: deny
@@ -12,7 +12,7 @@ Help turn the project into a clear portfolio-grade Rust eBPF EDR. Favor designs 
 Architectural defaults:
 
 - eBPF collects minimal raw telemetry.
-- Userspace normalizes, enriches, correlates, formats, and applies built-in detections. Generic `[[rules]]` are config-only and rejected when enabled until the rule engine is implemented.
+- Userspace normalizes, enriches, correlates, formats, and applies built-in detections. Generic `[[rules]]` are evaluated by an MVP userspace rule engine.
 - `crates/common` defines stable event contracts between kernel and userspace.
 - The first complete pipeline is more valuable than many incomplete hooks.
 - Detection work should map to attack scenarios and include expected false positives.
