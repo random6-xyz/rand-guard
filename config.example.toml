@@ -1,0 +1,88 @@
+[agent]
+id = "dev-host-001"
+mode = "monitor" # monitor | detect
+log_level = "info"
+
+[ebpf]
+enabled = true
+buffer_size = 8192
+
+[events]
+process = true
+file = true
+# Set both events.network and network.enabled to true to collect network syscall telemetry.
+network = false
+
+[process]
+enabled = true
+hooks = ["execve", "fork", "exit", "execveat"]
+collect_args = false
+collect_env = false
+collect_cwd = false
+
+[file]
+enabled = true
+hooks = ["openat", "openat2", "write", "rename", "renameat2", "unlink", "unlinkat"]
+watch_paths = ["/etc", "/usr/bin", "/bin"]
+watch_patterns = ["*.service"]
+exclude_paths = ["/var/log", "/tmp", "/proc", "/sys"]
+
+[network]
+enabled = false
+hooks = ["connect", "bind", "listen"]
+collect_dns = false
+collect_payload = false
+
+[[rules]]
+id = "PROC-001"
+name = "Shell spawned by web server"
+enabled = false
+type = "process"
+severity = "high"
+action = "alert"
+parent_names = ["nginx", "apache2", "httpd"]
+process_names = ["sh", "bash", "dash"]
+
+[[rules]]
+id = "FILE-001"
+name = "Sensitive file touched"
+enabled = false
+type = "file"
+severity = "high"
+action = "alert"
+paths = ["/etc/passwd", "/etc/shadow", "/etc/sudoers"]
+operations = ["open", "write", "unlink", "rename"]
+
+[[rules]]
+id = "NET-001"
+name = "Suspicious outbound port"
+enabled = false
+type = "network"
+severity = "medium"
+action = "alert"
+direction = "outbound"
+ports = [4444, 1337, 31337]
+
+[[detections.persistence]]
+name = "systemd_service_modified"
+paths = ["/etc/systemd/system/", "/usr/lib/systemd/system/", "/run/systemd/system/"]
+patterns = ["*.service"]
+operations = ["file_open", "file_write", "file_rename", "file_unlink"]
+
+[[detections.persistence]]
+name = "cron_modified"
+paths = ["/etc/cron.d/", "/etc/cron.daily/", "/etc/crontab"]
+operations = ["file_open", "file_write", "file_rename", "file_unlink"]
+
+[[detections.network]]
+name = "suspicious_outbound_port"
+directions = ["outbound"]
+ports = [4444, 1337, 31337]
+
+[output]
+type = "stdout" # stdout is supported by the current MVP runtime
+format = "json"
+
+[performance]
+max_events_per_second = 5000
+drop_when_full = true

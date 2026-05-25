@@ -1,10 +1,12 @@
 [alias]
 x = "run -p xtask --"
-xbe = "run -p xtask -- build-ebpf"
-xbu = "run -p xtask -- build-user"
-xb = "run -p xtask -- build"
-xr = "run -p xtask -- run"
-xd = "run -p xtask -- debug"
+
 xf = "run -p xtask -- format"
 xc = "run -p xtask -- check"
-xp = "run -p xtask -- prepare"
+xl = "run -p xtask -- clippy"
+xt = "run -p xtask -- test"
+xb = "run -p xtask -- build"
+xr = "run -p xtask -- run"
+xcs = "run -p xtask -- ci-smoke"
+xh = "run -p xtask -- help"
+xa = "run -p xtask -- format check clippy test build run"
