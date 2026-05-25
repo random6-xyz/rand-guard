@@ -17,6 +17,7 @@ const DROP_EXEC_PATH_PREFIXES: &[&str] = &["/tmp/", "/var/tmp/", "/dev/shm/", "/
 pub struct ScenarioEngine {
     recent_processes: HashMap<(u32, u32), ProcessSnapshot>,
     recent_file_writes: HashMap<String, FileSnapshot>,
+    max_seen_timestamp_ns: u64,
 }
 
 impl ScenarioEngine {
@@ -24,12 +25,14 @@ impl ScenarioEngine {
         Self {
             recent_processes: HashMap::new(),
             recent_file_writes: HashMap::new(),
+            max_seen_timestamp_ns: 0,
         }
     }
 
     pub fn evaluate(&mut self, event: &NormalizedEvent) -> Vec<Alert> {
         let timestamp_ns = event_timestamp_ns(event);
-        self.prune(timestamp_ns);
+        self.max_seen_timestamp_ns = self.max_seen_timestamp_ns.max(timestamp_ns);
+        self.prune(self.max_seen_timestamp_ns);
 
         match event {
             NormalizedEvent::ProcessStart(start) => {
@@ -101,7 +104,13 @@ impl ScenarioEngine {
     }
 
     fn remove_file_write(&mut self, path: &str) -> Vec<Alert> {
-        self.recent_file_writes.remove(path);
+        if path.contains('/') {
+            self.recent_file_writes.remove(path);
+        } else {
+            let suffix = format!("/{path}");
+            self.recent_file_writes
+                .retain(|tracked_path, _| !tracked_path.ends_with(&suffix));
+        }
         Vec::new()
     }
 
@@ -402,6 +411,17 @@ mod tests {
     }
 
     #[test]
+    fn older_event_does_not_prune_newer_reverse_shell_snapshot() {
+        let mut engine = ScenarioEngine::new();
+
+        engine.evaluate(&process_start("sh", 11_000_000_000));
+        engine.evaluate(&file_write("/tmp/older", 1_000));
+        let alerts = engine.evaluate(&network_connect(4444, 11_000_000_100));
+
+        assert_eq!(alerts.len(), 1);
+    }
+
+    #[test]
     fn reverse_shell_ignores_benign_port() {
         let mut engine = ScenarioEngine::new();
 
@@ -520,6 +540,17 @@ mod tests {
 
         engine.evaluate(&file_write("/tmp/rg-demo", 1_000));
         engine.evaluate(&file_unlink("/tmp/rg-demo", 1_500));
+        let alerts = engine.evaluate(&process_start_with_exe("rg-demo", "/tmp/rg-demo", 2_000));
+
+        assert!(alerts.is_empty());
+    }
+
+    #[test]
+    fn drop_execute_relative_unlink_removes_matching_snapshot() {
+        let mut engine = ScenarioEngine::new();
+
+        engine.evaluate(&file_write("/tmp/rg-demo", 1_000));
+        engine.evaluate(&file_unlink("rg-demo", 1_500));
         let alerts = engine.evaluate(&process_start_with_exe("rg-demo", "/tmp/rg-demo", 2_000));
 
         assert!(alerts.is_empty());
