@@ -102,7 +102,12 @@ impl Config {
             anyhow::bail!("network payload collection is not supported by the current runtime");
         }
         for rule in &self.rules {
-            validate_rule(rule)?;
+            if rule.id.starts_with("BUILTIN-") {
+                anyhow::bail!("rule id '{}' uses reserved 'BUILTIN-' prefix", rule.id);
+            }
+            if rule.enabled {
+                validate_rule(rule)?;
+            }
         }
         let mut seen_ids = std::collections::HashSet::new();
         for rule in &self.rules {
@@ -510,6 +515,7 @@ mod tests {
 
         let mut config = Config::from_str(include_str!("../../../config.example.toml"))
             .expect("example config should parse");
+        config.rules[1].enabled = true;
         config.rules[1].operations.clear();
 
         let err = config
@@ -519,6 +525,7 @@ mod tests {
 
         let mut config = Config::from_str(include_str!("../../../config.example.toml"))
             .expect("example config should parse");
+        config.rules[2].enabled = true;
         config.rules[2].direction = None;
 
         let err = config
@@ -753,6 +760,7 @@ mod tests {
     fn rejects_invalid_file_operation() {
         let mut config = Config::from_str(include_str!("../../../config.example.toml"))
             .expect("example config should parse");
+        config.rules[1].enabled = true;
         config.rules[1].operations = vec!["file_opne".to_string()];
 
         let err = config
@@ -765,6 +773,7 @@ mod tests {
     fn accepts_short_operation_aliases() {
         let mut config = Config::from_str(include_str!("../../../config.example.toml"))
             .expect("example config should parse");
+        config.rules[1].enabled = true;
         config.rules[1].operations = vec![
             "open".to_string(),
             "write".to_string(),
@@ -781,10 +790,37 @@ mod tests {
     fn accepts_wildcard_operation() {
         let mut config = Config::from_str(include_str!("../../../config.example.toml"))
             .expect("example config should parse");
+        config.rules[1].enabled = true;
         config.rules[1].operations = vec!["*".to_string()];
 
         config
             .validate_current_runtime()
             .expect("wildcard operation should be accepted");
+    }
+
+    #[test]
+    fn skips_validation_for_disabled_rules() {
+        let mut config = Config::from_str(include_str!("../../../config.example.toml"))
+            .expect("example config should parse");
+        config.rules[0].enabled = false;
+        config.rules[0].process_names.clear();
+        config.rules[0].parent_names.clear();
+
+        config
+            .validate_current_runtime()
+            .expect("disabled rules should skip semantic validation");
+    }
+
+    #[test]
+    fn rejects_builtin_prefix_in_user_rules() {
+        let mut config = Config::from_str(include_str!("../../../config.example.toml"))
+            .expect("example config should parse");
+        config.rules[0].enabled = true;
+        config.rules[0].id = "BUILTIN-USER-001".to_string();
+
+        let err = config
+            .validate_current_runtime()
+            .expect_err("BUILTIN- prefix should be rejected in user rules");
+        assert!(err.to_string().contains("reserved 'BUILTIN-' prefix"));
     }
 }
