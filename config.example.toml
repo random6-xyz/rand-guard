@@ -23,6 +23,8 @@ collect_cwd = false
 [file]
 enabled = true
 hooks = ["openat", "openat2", "write", "rename", "renameat2", "unlink", "unlinkat"]
+# Add a staging path such as "/tmp" to watch_paths and remove it from exclude_paths
+# when demoing BUILTIN-SCENARIO-DROP-EXEC-001 in a disposable environment.
 watch_paths = ["/etc", "/usr/bin", "/bin"]
 watch_patterns = ["*.service"]
 exclude_paths = ["/var/log", "/tmp", "/proc", "/sys"]
@@ -43,6 +45,9 @@ action = "alert"
 parent_names = ["nginx", "apache2", "httpd"]
 process_names = ["sh", "bash", "dash"]
 
+# This example is also available as BUILTIN-SCENARIO-WEB-SHELL-001 with
+# broader web parent and child process lists.
+
 [[rules]]
 id = "FILE-001"
 name = "Sensitive file touched"
@@ -54,6 +59,9 @@ paths = ["/etc/passwd", "/etc/shadow", "/etc/sudoers"]
 operations = ["file_open", "file_write", "file_unlink", "file_rename"]
 patterns = []
 
+# Credential access is also covered by BUILTIN-SCENARIO-CREDENTIAL-ACCESS-001,
+# including common SSH key names and *.kdbx files.
+
 [[rules]]
 id = "NET-001"
 name = "Suspicious outbound port"
@@ -63,6 +71,10 @@ severity = "medium"
 action = "alert"
 direction = "outbound"
 ports = [4444, 1337, 31337]
+
+# Reverse shell behavior additionally correlates process_start with
+# network_connect in BUILTIN-SCENARIO-REVERSE-SHELL-001. Set both network
+# enable flags to true before demoing it.
 
 [[detections.persistence]]
 name = "systemd_service_modified"
