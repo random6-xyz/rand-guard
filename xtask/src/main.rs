@@ -165,6 +165,7 @@ enabled = false
 type = "process"
 severity = "low"
 action = "alert"
+process_names = ["dummy"]
 
 [detections]
 persistence = []

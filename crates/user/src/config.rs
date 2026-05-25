@@ -34,9 +34,6 @@ impl Config {
     }
 
     pub fn validate_current_runtime(&self) -> anyhow::Result<()> {
-        if self.agent.mode != AgentMode::Monitor {
-            anyhow::bail!("only monitor mode is supported by the current runtime");
-        }
         if !self.ebpf.enabled {
             anyhow::bail!("eBPF is disabled by config");
         }
@@ -104,8 +101,19 @@ impl Config {
         if self.network.collect_payload {
             anyhow::bail!("network payload collection is not supported by the current runtime");
         }
-        if self.rules.iter().any(|rule| rule.enabled) {
-            anyhow::bail!("detection rules are not supported by the current runtime");
+        for rule in &self.rules {
+            if rule.id.starts_with("BUILTIN-") {
+                anyhow::bail!("rule id '{}' uses reserved 'BUILTIN-' prefix", rule.id);
+            }
+            if rule.enabled {
+                validate_rule(rule)?;
+            }
+        }
+        let mut seen_ids = std::collections::HashSet::new();
+        for rule in &self.rules {
+            if !seen_ids.insert(&rule.id) {
+                anyhow::bail!("duplicate rule id '{}'", rule.id);
+            }
         }
         if self.output.output_type != OutputType::Stdout {
             anyhow::bail!("only stdout output is supported by the current runtime");
@@ -115,7 +123,95 @@ impl Config {
     }
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+pub fn validate_rule(rule: &RuleConfig) -> anyhow::Result<()> {
+    if rule.action != RuleAction::Alert {
+        anyhow::bail!("rule '{}' uses an unsupported action", rule.id);
+    }
+
+    match rule.rule_type {
+        RuleType::Process => {
+            if rule.process_names.is_empty() && rule.parent_names.is_empty() {
+                anyhow::bail!(
+                    "process rule '{}' must define process_names or parent_names",
+                    rule.id
+                );
+            }
+            if !rule.paths.is_empty()
+                || !rule.patterns.is_empty()
+                || !rule.operations.is_empty()
+                || rule.direction.is_some()
+                || !rule.ports.is_empty()
+            {
+                anyhow::bail!(
+                    "process rule '{}' contains non-process match fields",
+                    rule.id
+                );
+            }
+        }
+        RuleType::File => {
+            if rule.paths.is_empty() && rule.patterns.is_empty() {
+                anyhow::bail!("file rule '{}' must define paths or patterns", rule.id);
+            }
+            if rule.operations.is_empty() {
+                anyhow::bail!("file rule '{}' must define operations", rule.id);
+            }
+            for op in &rule.operations {
+                if !is_valid_file_operation(op) {
+                    anyhow::bail!(
+                        "file rule '{}' uses unrecognized operation '{}'",
+                        rule.id,
+                        op
+                    );
+                }
+            }
+            if !rule.parent_names.is_empty()
+                || !rule.process_names.is_empty()
+                || rule.direction.is_some()
+                || !rule.ports.is_empty()
+            {
+                anyhow::bail!("file rule '{}' contains non-file match fields", rule.id);
+            }
+        }
+        RuleType::Network => {
+            if rule.direction.is_none() {
+                anyhow::bail!("network rule '{}' must define direction", rule.id);
+            }
+            if rule.ports.is_empty() {
+                anyhow::bail!("network rule '{}' must define ports", rule.id);
+            }
+            if !rule.parent_names.is_empty()
+                || !rule.paths.is_empty()
+                || !rule.patterns.is_empty()
+                || !rule.operations.is_empty()
+            {
+                anyhow::bail!(
+                    "network rule '{}' contains non-network match fields",
+                    rule.id
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+const VALID_FILE_OPERATIONS: &[&str] = &[
+    "file_open",
+    "file_write",
+    "file_rename",
+    "file_unlink",
+    "open",
+    "write",
+    "rename",
+    "unlink",
+    "*",
+];
+
+fn is_valid_file_operation(op: &str) -> bool {
+    VALID_FILE_OPERATIONS.contains(&op)
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct AgentConfig {
     pub id: String,
@@ -123,7 +219,7 @@ pub struct AgentConfig {
     pub log_level: String,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentMode {
     Monitor,
@@ -175,7 +271,7 @@ pub struct NetworkConfig {
     pub collect_payload: bool,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RuleConfig {
     pub id: String,
@@ -192,6 +288,8 @@ pub struct RuleConfig {
     #[serde(default)]
     pub paths: Vec<String>,
     #[serde(default)]
+    pub patterns: Vec<String>,
+    #[serde(default)]
     pub operations: Vec<String>,
     #[serde(default)]
     pub direction: Option<NetworkDirection>,
@@ -199,7 +297,7 @@ pub struct RuleConfig {
     pub ports: Vec<u16>,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RuleType {
     Process,
@@ -207,7 +305,7 @@ pub enum RuleType {
     Network,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
     Low,
@@ -216,7 +314,7 @@ pub enum Severity {
     Critical,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RuleAction {
     Alert,
@@ -310,7 +408,7 @@ mod tests {
         assert_eq!(config.file.watch_paths, ["/etc", "/usr/bin", "/bin"]);
         assert_eq!(config.network.hooks, ["connect", "bind", "listen"]);
         assert_eq!(config.rules.len(), 3);
-        assert!(config.rules.iter().all(|rule| !rule.enabled));
+        assert!(config.rules[0].enabled);
         assert_eq!(config.rules[0].rule_type, RuleType::Process);
         assert_eq!(
             config.rules[1].paths,
@@ -393,19 +491,47 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsupported_enabled_rules() {
+    fn validates_enabled_rules() {
         let mut config = Config::from_str(include_str!("../../../config.example.toml"))
             .expect("example config should parse");
-        config.rules[0].enabled = true;
+        config.rules.iter_mut().for_each(|rule| rule.enabled = true);
+
+        config
+            .validate_current_runtime()
+            .expect("enabled MVP rules should validate");
+    }
+
+    #[test]
+    fn rejects_invalid_rule_semantics() {
+        let mut config = Config::from_str(include_str!("../../../config.example.toml"))
+            .expect("example config should parse");
+        config.rules[0].process_names.clear();
+        config.rules[0].parent_names.clear();
 
         let err = config
             .validate_current_runtime()
-            .expect_err("enabled rules should be rejected until rule engine exists");
+            .expect_err("process rules should require process or parent names");
+        assert!(err.to_string().contains("process_names or parent_names"));
 
-        assert!(
-            err.to_string()
-                .contains("detection rules are not supported")
-        );
+        let mut config = Config::from_str(include_str!("../../../config.example.toml"))
+            .expect("example config should parse");
+        config.rules[1].enabled = true;
+        config.rules[1].operations.clear();
+
+        let err = config
+            .validate_current_runtime()
+            .expect_err("file rules should require operations");
+        assert!(err.to_string().contains("must define operations"));
+
+        let mut config = Config::from_str(include_str!("../../../config.example.toml"))
+            .expect("example config should parse");
+        config.rules[2].enabled = true;
+        config.rules[2].direction = None;
+
+        let err = config
+            .validate_current_runtime()
+            .expect_err("network rules should require direction");
+        assert!(err.to_string().contains("must define direction"));
     }
 
     #[test]
@@ -553,16 +679,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_detect_mode_until_rules_are_supported() {
+    fn validates_detect_mode() {
         let mut config = Config::from_str(include_str!("../../../config.example.toml"))
             .expect("example config should parse");
         config.agent.mode = AgentMode::Detect;
 
-        let err = config
+        config
             .validate_current_runtime()
-            .expect_err("detect mode should be rejected until rule engine exists");
-
-        assert!(err.to_string().contains("only monitor mode is supported"));
+            .expect("detect mode should validate now that alerts are emitted");
     }
 
     #[test]
@@ -615,5 +739,88 @@ mod tests {
         .expect_err("unknown fields should be rejected");
 
         assert!(err.to_string().contains("invalid TOML config"));
+    }
+
+    #[test]
+    fn rejects_duplicate_rule_ids() {
+        let mut config = Config::from_str(include_str!("../../../config.example.toml"))
+            .expect("example config should parse");
+        config.rules[0].enabled = true;
+        config.rules[0].id = "DUPLICATE".to_string();
+        config.rules[1].enabled = true;
+        config.rules[1].id = "DUPLICATE".to_string();
+
+        let err = config
+            .validate_current_runtime()
+            .expect_err("duplicate rule IDs should be rejected");
+        assert!(err.to_string().contains("duplicate rule id"));
+    }
+
+    #[test]
+    fn rejects_invalid_file_operation() {
+        let mut config = Config::from_str(include_str!("../../../config.example.toml"))
+            .expect("example config should parse");
+        config.rules[1].enabled = true;
+        config.rules[1].operations = vec!["file_opne".to_string()];
+
+        let err = config
+            .validate_current_runtime()
+            .expect_err("invalid operation name should be rejected");
+        assert!(err.to_string().contains("unrecognized operation"));
+    }
+
+    #[test]
+    fn accepts_short_operation_aliases() {
+        let mut config = Config::from_str(include_str!("../../../config.example.toml"))
+            .expect("example config should parse");
+        config.rules[1].enabled = true;
+        config.rules[1].operations = vec![
+            "open".to_string(),
+            "write".to_string(),
+            "rename".to_string(),
+            "unlink".to_string(),
+        ];
+
+        config
+            .validate_current_runtime()
+            .expect("short operation aliases should be accepted");
+    }
+
+    #[test]
+    fn accepts_wildcard_operation() {
+        let mut config = Config::from_str(include_str!("../../../config.example.toml"))
+            .expect("example config should parse");
+        config.rules[1].enabled = true;
+        config.rules[1].operations = vec!["*".to_string()];
+
+        config
+            .validate_current_runtime()
+            .expect("wildcard operation should be accepted");
+    }
+
+    #[test]
+    fn skips_validation_for_disabled_rules() {
+        let mut config = Config::from_str(include_str!("../../../config.example.toml"))
+            .expect("example config should parse");
+        config.rules[0].enabled = false;
+        config.rules[0].process_names.clear();
+        config.rules[0].parent_names.clear();
+
+        config
+            .validate_current_runtime()
+            .expect("disabled rules should skip semantic validation");
+    }
+
+    #[test]
+    fn rejects_builtin_prefix_in_user_rules() {
+        let mut config = Config::from_str(include_str!("../../../config.example.toml"))
+            .expect("example config should parse");
+        config.rules[0].enabled = true;
+        config.rules[0].id = "BUILTIN-USER-001".to_string();
+
+        let err = config
+            .validate_current_runtime()
+            .expect_err("BUILTIN- prefix should be rejected in user rules");
+        assert!(err.to_string().contains("reserved 'BUILTIN-' prefix"));
     }
 }
