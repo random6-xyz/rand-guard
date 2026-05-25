@@ -10,11 +10,12 @@ The current working slice is a minimum end-to-end EDR loop:
 - collect network connect, bind, and listen syscall telemetry when explicitly enabled
 - deliver events to userspace through the `EVENTS` ring buffer
 - normalize events into stable Rust structs and enrich them with a userspace process table
-- output newline-delimited JSON for tests, demos, and future detection rules
+- output newline-delimited JSON for tests, demos, telemetry, and alerts
 - apply built-in persistence-sensitive file detections from `[[detections.persistence]]`
 - apply built-in suspicious network port detections from `[[detections.network]]`
+- emit separate `event_type = "alert"` records for matching MVP `[[rules]]` and first built-in rule-engine rules
 
-Generic `[[rules]]` evaluation is not implemented in the current runtime. Configs may describe rules, but enabling any `[[rules]]` entry should fail validation until the rule-engine slice is built.
+Generic `[[rules]]` evaluation is implemented as an MVP userspace rule engine over normalized events. Enabled `process`, `file`, and `network` rules are supported when they use the current simple matcher fields.
 
 Network collection is implemented for `connect`, `bind`, and `listen` syscall tracepoints only. DNS collection, payload collection, accept/accept4, socket lifecycle correlation, and listen-to-bind socket table enrichment are not implemented yet.
 
@@ -58,7 +59,7 @@ Build visibility before detection breadth:
 1. process execution and lifecycle: implemented with exec, fork, exit, and execveat correlation
 2. file and persistence-sensitive path visibility: implemented for open, write, rename, and unlink families
 3. network connection/listen visibility: implemented for connect, bind, and listen syscall families
-4. generic rule engine MVP beyond the current built-in persistence and network detections
+4. generic rule engine MVP beyond the current built-in persistence and network detections: implemented for single-event process/file/network matches
 5. scenario-based detections such as reverse shell, web shell execution, credential access, systemd persistence, and drop-and-execute
 6. hardening, performance measurement, packaging, and open-source collaboration docs
 

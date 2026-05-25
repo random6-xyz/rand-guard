@@ -2,7 +2,7 @@
 
 `rand-guard` is a small Rust eBPF EDR built for systems and security study. It focuses on a correct, explainable telemetry pipeline rather than broad product-style feature coverage.
 
-The current agent can collect process, file, and opt-in network syscall telemetry, normalize it in userspace, enrich events with process context, and print newline-delimited JSON for tests, demos, and future detection rules.
+The current agent can collect process, file, and opt-in network syscall telemetry, normalize it in userspace, enrich events with process context, evaluate MVP rules, and print newline-delimited JSON for tests and demos.
 
 ## Current Capabilities
 
@@ -13,12 +13,14 @@ The current agent can collect process, file, and opt-in network syscall telemetr
 - eBPF to userspace delivery through the `EVENTS` ring buffer.
 - Userspace process table enrichment for `ppid`, `comm`, and `exe_path` when available.
 - NDJSON output to stdout.
+- MVP `[[rules]]` matching for process, file, and network normalized events.
+- Stable alert events with `event_type = "alert"`.
 - Built-in persistence detections from `[[detections.persistence]]`.
 - Built-in suspicious network port detections from `[[detections.network]]`.
 
 ## Current Limits
 
-- Generic `[[rules]]` are not evaluated yet. Enabled rules fail config validation until the rule-engine slice is implemented.
+- Rule matching is intentionally simple: no expression DSL, regex, multi-event correlation, or time windows yet.
 - Network collection supports only `connect`, `bind`, and `listen`.
 - DNS collection, payload collection, `accept`/`accept4`, and socket lifecycle correlation are not implemented.
 - `listen` events currently include `fd` and `backlog`; local address/port require future bind-to-listen correlation.
@@ -108,7 +110,21 @@ collect_dns = false
 collect_payload = false
 ```
 
-Generic `[[rules]]` entries may be present as future configuration examples, but they must remain `enabled = false` until the rule engine is implemented.
+`monitor` and `detect` modes both emit telemetry; matching rules additionally emit adjacent alert records. MVP `[[rules]]` entries support these fields:
+
+```toml
+[[rules]]
+id = "FILE-001"
+name = "Sensitive file touched"
+enabled = true
+type = "file"
+severity = "high"
+action = "alert"
+paths = ["/etc/passwd", "/etc/shadow", "/etc/sudoers"]
+operations = ["file_open", "file_write", "file_unlink", "file_rename"]
+```
+
+Process rules match `process_names` and/or `parent_names`. File rules match `paths`, optional `patterns`, and canonical operations. Network rules match `direction`, `ports`, and optional `process_names`.
 
 ## Output
 
@@ -118,7 +134,7 @@ The agent writes one JSON object per line. Process events look like:
 {"event_type":"process_start","pid":100,"tid":100,"ppid":1,"comm":"bash","exe_path":"/usr/bin/bash","source":"execve","timestamp_ns":123}
 ```
 
-File detections include alert fields:
+File detections still include legacy event-local alert fields:
 
 ```json
 {"event_type":"file_open","pid":100,"filename":"/etc/systemd/system/demo.service","alert":true,"detection_type":"systemd_service_modified"}
@@ -128,6 +144,12 @@ Network events include connection or listener metadata:
 
 ```json
 {"event_type":"network_connect","pid":100,"comm":"nc","family":"ipv4","socket_fd":3,"remote_addr":"127.0.0.1","remote_port":4444,"alert":true,"detection_type":"suspicious_outbound_port"}
+```
+
+Rule matches emit a separate stable alert event immediately after the source telemetry event:
+
+```json
+{"event_type":"alert","timestamp_ns":123,"rule_id":"FILE-001","rule_name":"Sensitive file touched","rule_type":"file","severity":"high","action":"alert","source_event_type":"file_write","pid":100,"tid":100,"ppid":1,"uid":0,"gid":0,"comm":"bash","exe_path":"/usr/bin/bash","path":"/etc/shadow","operation":"file_write"}
 ```
 
 ## Built-In Detections
@@ -144,3 +166,5 @@ ports = [4444, 1337, 31337]
 ```
 
 Expected false positives include netcat labs, CTF tooling, debug listeners, local tunnels, and remote shell experiments.
+
+The rule engine also loads first built-in rules for systemd service modifications, cron configuration modifications, and suspicious outbound ports. The older `[[detections.persistence]]` and `[[detections.network]]` paths remain for compatibility with event-local `alert` and `detection_type` fields.

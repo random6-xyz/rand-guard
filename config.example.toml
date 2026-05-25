@@ -36,7 +36,7 @@ collect_payload = false
 [[rules]]
 id = "PROC-001"
 name = "Shell spawned by web server"
-enabled = false
+enabled = true
 type = "process"
 severity = "high"
 action = "alert"
@@ -51,7 +51,8 @@ type = "file"
 severity = "high"
 action = "alert"
 paths = ["/etc/passwd", "/etc/shadow", "/etc/sudoers"]
-operations = ["open", "write", "unlink", "rename"]
+operations = ["file_open", "file_write", "file_unlink", "file_rename"]
+patterns = []
 
 [[rules]]
 id = "NET-001"

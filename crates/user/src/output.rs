@@ -7,6 +7,7 @@ use crate::normalize::{
     FileUnlinkAt, FileWrite, FileWriteV, NetworkBind, NetworkConnect, NetworkListen,
     NormalizedEvent, ProcessExit, ProcessRelationship, ProcessStart,
 };
+use crate::rules::Alert;
 
 pub struct JsonOutput<W> {
     writer: W,
@@ -28,10 +29,43 @@ impl<W: Write> JsonOutput<W> {
             .context("failed to write normalized event JSON")
     }
 
+    pub fn write_alert(&mut self, alert: &Alert) -> anyhow::Result<()> {
+        writeln!(self.writer, "{}", format_alert_json(alert)).context("failed to write alert JSON")
+    }
+
     #[cfg(test)]
     fn into_inner(self) -> W {
         self.writer
     }
+}
+
+pub fn format_alert_json(alert: &Alert) -> String {
+    serde_json::json!({
+        "event_type": "alert",
+        "timestamp_ns": alert.timestamp_ns,
+        "rule_id": alert.rule_id,
+        "rule_name": alert.rule_name,
+        "rule_type": alert.rule_type,
+        "severity": alert.severity,
+        "action": alert.action,
+        "source_event_type": alert.source_event_type,
+        "pid": alert.pid,
+        "tid": alert.tid,
+        "ppid": alert.ppid,
+        "uid": alert.uid,
+        "gid": alert.gid,
+        "comm": alert.comm,
+        "exe_path": alert.exe_path,
+        "process_name": alert.process_name,
+        "parent_name": alert.parent_name,
+        "path": alert.path,
+        "operation": alert.operation,
+        "direction": alert.direction,
+        "port": alert.port,
+        "addr": alert.addr,
+        "family": alert.family,
+    })
+    .to_string()
 }
 
 pub fn format_normalized_event_json(event: &NormalizedEvent) -> String {
@@ -777,6 +811,84 @@ mod tests {
             .expect("network listen output should be valid JSON");
         assert_eq!(value["event_type"], "network_listen");
         assert_eq!(value["backlog"], 128);
+    }
+
+    #[test]
+    fn formats_alert_as_stable_json() {
+        let alert = Alert {
+            timestamp_ns: 123,
+            rule_id: "FILE-001".to_string(),
+            rule_name: "Sensitive file touched".to_string(),
+            rule_type: "file".to_string(),
+            severity: "high".to_string(),
+            action: "alert".to_string(),
+            source_event_type: "file_write".to_string(),
+            pid: Some(100),
+            tid: Some(100),
+            ppid: Some(1),
+            uid: Some(0),
+            gid: Some(0),
+            comm: Some("bash".to_string()),
+            exe_path: Some("/usr/bin/bash".to_string()),
+            process_name: None,
+            parent_name: None,
+            path: Some("/etc/shadow".to_string()),
+            operation: Some("file_write".to_string()),
+            direction: None,
+            port: None,
+            addr: None,
+            family: None,
+        };
+
+        let value: serde_json::Value = serde_json::from_str(&format_alert_json(&alert))
+            .expect("alert output should be valid JSON");
+
+        assert_eq!(value["event_type"], "alert");
+        assert_eq!(value["rule_id"], "FILE-001");
+        assert_eq!(value["source_event_type"], "file_write");
+        assert_eq!(value["path"], "/etc/shadow");
+        assert_eq!(value["operation"], "file_write");
+        assert!(value["direction"].is_null());
+    }
+
+    #[test]
+    fn writes_alert_line_to_writer() {
+        let alert = Alert {
+            timestamp_ns: 123,
+            rule_id: "NET-001".to_string(),
+            rule_name: "Suspicious outbound port".to_string(),
+            rule_type: "network".to_string(),
+            severity: "medium".to_string(),
+            action: "alert".to_string(),
+            source_event_type: "network_connect".to_string(),
+            pid: Some(100),
+            tid: Some(100),
+            ppid: Some(1),
+            uid: Some(1000),
+            gid: Some(1000),
+            comm: Some("nc".to_string()),
+            exe_path: Some("/usr/bin/nc".to_string()),
+            process_name: None,
+            parent_name: None,
+            path: None,
+            operation: None,
+            direction: Some("outbound".to_string()),
+            port: Some(4444),
+            addr: Some("127.0.0.1".to_string()),
+            family: Some("ipv4".to_string()),
+        };
+        let mut output = JsonOutput::new(Vec::new());
+
+        output
+            .write_alert(&alert)
+            .expect("alert write should succeed");
+
+        let line = String::from_utf8(output.into_inner()).expect("JSON output should be UTF-8");
+        assert!(line.ends_with('\n'));
+        let value: serde_json::Value =
+            serde_json::from_str(line.trim_end()).expect("written alert should be valid JSON");
+        assert_eq!(value["event_type"], "alert");
+        assert_eq!(value["port"], 4444);
     }
 
     fn sample_process_start() -> ProcessStart {

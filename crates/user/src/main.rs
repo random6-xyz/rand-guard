@@ -5,6 +5,7 @@ mod normalize;
 mod output;
 mod privilege;
 mod process_table;
+mod rules;
 
 use anyhow::Context;
 use aya::{maps::ring_buf::RingBuf, programs::TracePoint};
@@ -194,6 +195,7 @@ async fn main() -> anyhow::Result<()> {
     let mut async_ring = AsyncFd::new(ring_buf)?;
     let mut output = output::JsonOutput::stdout();
     let mut table = ProcessTable::new();
+    let rule_engine = rules::RuleEngine::new(&config.rules);
 
     let mut ci_smoke_start_seen = false;
     let mut ci_smoke_rel_or_exit_seen = false;
@@ -435,6 +437,9 @@ async fn main() -> anyhow::Result<()> {
 
                     if let Some(event) = normalized {
                         output.write_normalized(&event)?;
+                        for alert in rule_engine.evaluate(&event) {
+                            output.write_alert(&alert)?;
+                        }
                         if ci_smoke {
                             match &event {
                                 NormalizedEvent::ProcessStart(_) => ci_smoke_start_seen = true,
