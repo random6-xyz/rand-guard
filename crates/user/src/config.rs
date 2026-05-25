@@ -104,6 +104,12 @@ impl Config {
         for rule in &self.rules {
             validate_rule(rule)?;
         }
+        let mut seen_ids = std::collections::HashSet::new();
+        for rule in &self.rules {
+            if !seen_ids.insert(&rule.id) {
+                anyhow::bail!("duplicate rule id '{}'", rule.id);
+            }
+        }
         if self.output.output_type != OutputType::Stdout {
             anyhow::bail!("only stdout output is supported by the current runtime");
         }
@@ -112,7 +118,7 @@ impl Config {
     }
 }
 
-fn validate_rule(rule: &RuleConfig) -> anyhow::Result<()> {
+pub fn validate_rule(rule: &RuleConfig) -> anyhow::Result<()> {
     if rule.action != RuleAction::Alert {
         anyhow::bail!("rule '{}' uses an unsupported action", rule.id);
     }
@@ -144,6 +150,15 @@ fn validate_rule(rule: &RuleConfig) -> anyhow::Result<()> {
             if rule.operations.is_empty() {
                 anyhow::bail!("file rule '{}' must define operations", rule.id);
             }
+            for op in &rule.operations {
+                if !is_valid_file_operation(op) {
+                    anyhow::bail!(
+                        "file rule '{}' uses unrecognized operation '{}'",
+                        rule.id,
+                        op
+                    );
+                }
+            }
             if !rule.parent_names.is_empty()
                 || !rule.process_names.is_empty()
                 || rule.direction.is_some()
@@ -173,6 +188,22 @@ fn validate_rule(rule: &RuleConfig) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+const VALID_FILE_OPERATIONS: &[&str] = &[
+    "file_open",
+    "file_write",
+    "file_rename",
+    "file_unlink",
+    "open",
+    "write",
+    "rename",
+    "unlink",
+    "*",
+];
+
+fn is_valid_file_operation(op: &str) -> bool {
+    VALID_FILE_OPERATIONS.contains(&op)
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -701,5 +732,59 @@ mod tests {
         .expect_err("unknown fields should be rejected");
 
         assert!(err.to_string().contains("invalid TOML config"));
+    }
+
+    #[test]
+    fn rejects_duplicate_rule_ids() {
+        let mut config = Config::from_str(include_str!("../../../config.example.toml"))
+            .expect("example config should parse");
+        config.rules[0].enabled = true;
+        config.rules[0].id = "DUPLICATE".to_string();
+        config.rules[1].enabled = true;
+        config.rules[1].id = "DUPLICATE".to_string();
+
+        let err = config
+            .validate_current_runtime()
+            .expect_err("duplicate rule IDs should be rejected");
+        assert!(err.to_string().contains("duplicate rule id"));
+    }
+
+    #[test]
+    fn rejects_invalid_file_operation() {
+        let mut config = Config::from_str(include_str!("../../../config.example.toml"))
+            .expect("example config should parse");
+        config.rules[1].operations = vec!["file_opne".to_string()];
+
+        let err = config
+            .validate_current_runtime()
+            .expect_err("invalid operation name should be rejected");
+        assert!(err.to_string().contains("unrecognized operation"));
+    }
+
+    #[test]
+    fn accepts_short_operation_aliases() {
+        let mut config = Config::from_str(include_str!("../../../config.example.toml"))
+            .expect("example config should parse");
+        config.rules[1].operations = vec![
+            "open".to_string(),
+            "write".to_string(),
+            "rename".to_string(),
+            "unlink".to_string(),
+        ];
+
+        config
+            .validate_current_runtime()
+            .expect("short operation aliases should be accepted");
+    }
+
+    #[test]
+    fn accepts_wildcard_operation() {
+        let mut config = Config::from_str(include_str!("../../../config.example.toml"))
+            .expect("example config should parse");
+        config.rules[1].operations = vec!["*".to_string()];
+
+        config
+            .validate_current_runtime()
+            .expect("wildcard operation should be accepted");
     }
 }

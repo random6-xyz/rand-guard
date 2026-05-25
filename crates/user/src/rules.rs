@@ -110,7 +110,7 @@ pub fn builtin_rules() -> Vec<RuleConfig> {
 }
 
 fn file_operations() -> Vec<String> {
-    ["file_open", "file_write", "file_rename", "file_unlink"]
+    ["file_write", "file_rename", "file_unlink"]
         .iter()
         .map(|op| op.to_string())
         .collect()
@@ -124,6 +124,10 @@ fn evaluate_rule(rule: &RuleConfig, event: &NormalizedEvent) -> Option<Alert> {
     }
 }
 
+// ProcessStart carries the child comm but not the parent comm, so rules
+// requiring parent_names cannot match it and must wait for a
+// ProcessRelationship (fork) event. ProcessRelationship carries both child
+// and parent comm, so both process_names and parent_names are checked.
 fn evaluate_process_rule(rule: &RuleConfig, event: &NormalizedEvent) -> Option<Alert> {
     match event {
         NormalizedEvent::ProcessStart(start) => {
@@ -192,6 +196,8 @@ fn evaluate_network_rule(rule: &RuleConfig, event: &NormalizedEvent) -> Option<A
     Some(network_alert(rule, &fields))
 }
 
+// Empty process_names matches any process (catch-all). This is intentional
+// for port-based detection rules where scoping by process is optional.
 fn matches_name(names: &[String], value: &str) -> bool {
     names.is_empty() || names.iter().any(|name| name == value)
 }
@@ -215,7 +221,13 @@ fn canonical_operation(operation: &str) -> &str {
 fn matches_path_rule(path: &str, paths: &[String], patterns: &[String]) -> bool {
     let has_paths = !paths.is_empty();
     let has_patterns = !patterns.is_empty();
-    let matches_path = paths.iter().any(|prefix| path.starts_with(prefix));
+    let matches_path = paths.iter().any(|p| {
+        if p.ends_with('/') {
+            path.starts_with(p)
+        } else {
+            path == p || path.starts_with(&format!("{p}/"))
+        }
+    });
     let matches_pattern = patterns
         .iter()
         .any(|pattern| matches_pattern(path, pattern));
@@ -235,7 +247,7 @@ fn matches_pattern(path: &str, pattern: &str) -> bool {
     if let Some(suffix) = pattern.strip_prefix("*.") {
         path.ends_with(&format!(".{suffix}"))
     } else {
-        path.contains(pattern)
+        path == pattern
     }
 }
 
@@ -301,6 +313,7 @@ fn file_alert(rule: &RuleConfig, fields: &FileFields<'_>, path: &str) -> Alert {
     alert.gid = Some(fields.gid);
     alert.comm = Some(fields.comm.to_string());
     alert.exe_path = Some(fields.exe_path.to_string());
+    alert.process_name = Some(fields.comm.to_string());
     alert.path = Some(path.to_string());
     alert.operation = Some(fields.operation.to_string());
     alert
@@ -315,6 +328,7 @@ fn network_alert(rule: &RuleConfig, fields: &NetworkFields<'_>) -> Alert {
     alert.gid = Some(fields.gid);
     alert.comm = Some(fields.comm.to_string());
     alert.exe_path = Some(fields.exe_path.to_string());
+    alert.process_name = Some(fields.comm.to_string());
     alert.direction = Some(direction_name(fields.direction).to_string());
     alert.port = Some(fields.port);
     alert.addr = Some(fields.addr.to_string());
@@ -665,7 +679,7 @@ impl<'a> NetworkFields<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::normalize::{FileRename, NetworkConnect, ProcessStart};
+    use crate::normalize::{FileOpen, FileRename, FileWrite, NetworkConnect, ProcessStart};
 
     fn file_rule() -> RuleConfig {
         RuleConfig {
@@ -849,5 +863,239 @@ mod tests {
         });
 
         assert!(engine.evaluate(&event).is_empty());
+    }
+
+    #[test]
+    fn process_rule_with_parent_names_skips_process_start() {
+        let engine = RuleEngine::new(&[RuleConfig {
+            id: "PROC-002".to_string(),
+            name: "Shell spawned by web server".to_string(),
+            enabled: true,
+            rule_type: RuleType::Process,
+            severity: Severity::High,
+            action: RuleAction::Alert,
+            parent_names: vec!["nginx".to_string()],
+            process_names: vec!["bash".to_string()],
+            paths: vec![],
+            patterns: vec![],
+            operations: vec![],
+            direction: None,
+            ports: vec![],
+        }]);
+        let event = NormalizedEvent::ProcessStart(ProcessStart {
+            pid: 10,
+            tid: 10,
+            ppid: 1,
+            uid: 1000,
+            gid: 1000,
+            comm: "bash".to_string(),
+            exe_path: "/usr/bin/bash".to_string(),
+            source: Some("execve".to_string()),
+            timestamp_ns: 123,
+            filename_truncated: false,
+        });
+
+        assert!(engine.evaluate(&event).is_empty());
+    }
+
+    #[test]
+    fn file_alert_includes_process_name() {
+        let mut rule = file_rule();
+        rule.paths = vec!["/etc/shadow".to_string()];
+        rule.operations = vec!["file_write".to_string()];
+        let engine = RuleEngine::new(&[rule]);
+        let event = NormalizedEvent::FileWrite(FileWrite {
+            pid: 10,
+            tid: 10,
+            ppid: 1,
+            uid: 0,
+            gid: 0,
+            comm: "tee".to_string(),
+            exe_path: "/usr/bin/tee".to_string(),
+            fd: 3,
+            count: 100,
+            resolved_path: "/etc/shadow".to_string(),
+            alert: false,
+            detection_type: None,
+            timestamp_ns: 123,
+        });
+
+        let alerts = engine.evaluate(&event);
+        assert!(!alerts.is_empty());
+        assert_eq!(alerts[0].process_name, Some("tee".to_string()));
+        assert_eq!(alerts[0].comm, Some("tee".to_string()));
+    }
+
+    #[test]
+    fn network_alert_includes_process_name() {
+        let engine = RuleEngine::new(&[RuleConfig {
+            id: "NET-001".to_string(),
+            name: "Suspicious outbound port".to_string(),
+            enabled: true,
+            rule_type: RuleType::Network,
+            severity: Severity::Medium,
+            action: RuleAction::Alert,
+            parent_names: vec![],
+            process_names: vec!["nc".to_string()],
+            paths: vec![],
+            patterns: vec![],
+            operations: vec![],
+            direction: Some(NetworkDirection::Outbound),
+            ports: vec![4444],
+        }]);
+        let event = NormalizedEvent::NetworkConnect(NetworkConnect {
+            pid: 10,
+            tid: 10,
+            ppid: 1,
+            uid: 1000,
+            gid: 1000,
+            comm: "nc".to_string(),
+            exe_path: "/usr/bin/nc".to_string(),
+            family: "ipv4".to_string(),
+            socket_fd: 3,
+            remote_addr: "127.0.0.1".to_string(),
+            remote_port: 4444,
+            alert: false,
+            detection_type: None,
+            timestamp_ns: 123,
+        });
+
+        let alerts = engine.evaluate(&event);
+        let user_alert = alerts.iter().find(|a| a.rule_id == "NET-001").unwrap();
+        assert_eq!(user_alert.process_name, Some("nc".to_string()));
+    }
+
+    #[test]
+    fn matches_pattern_suffix_only() {
+        assert!(matches_pattern("/etc/systemd/ssh.service", "*.service"));
+        assert!(matches_pattern("backup.service", "*.service"));
+        assert!(!matches_pattern("/etc/shadow", "*.service"));
+    }
+
+    #[test]
+    fn matches_pattern_exact_fallback() {
+        assert!(matches_pattern("/etc/crontab", "/etc/crontab"));
+        assert!(!matches_pattern("/etc/crontab.bak", "/etc/crontab"));
+        assert!(!matches_pattern("/v/etc/passwd", "etc"));
+    }
+
+    #[test]
+    fn matches_path_rule_exact_file() {
+        assert!(matches_path_rule(
+            "/etc/crontab",
+            &["/etc/crontab".to_string()],
+            &[]
+        ));
+        assert!(!matches_path_rule(
+            "/etc/crontab.bak",
+            &["/etc/crontab".to_string()],
+            &[]
+        ));
+        assert!(matches_path_rule(
+            "/etc/crontab/back",
+            &["/etc/crontab".to_string()],
+            &[]
+        ));
+    }
+
+    #[test]
+    fn matches_path_rule_directory_prefix() {
+        assert!(matches_path_rule(
+            "/etc/systemd/system/ssh.service",
+            &["/etc/systemd/system/".to_string()],
+            &[]
+        ));
+        assert!(!matches_path_rule(
+            "/etc/systemd_other",
+            &["/etc/systemd/system/".to_string()],
+            &[]
+        ));
+    }
+
+    #[test]
+    fn builtin_rules_validate() {
+        use crate::config::validate_rule;
+        for rule in builtin_rules() {
+            validate_rule(&rule)
+                .unwrap_or_else(|e| panic!("built-in rule '{}' should validate: {e}", rule.id));
+        }
+    }
+
+    #[test]
+    fn builtin_cron_rule_matches_exact_path() {
+        let rules = builtin_rules();
+        let _cron_rule = rules
+            .iter()
+            .find(|r| r.id == "BUILTIN-FILE-CRON-001")
+            .unwrap();
+        let engine = RuleEngine::new(&[]);
+        let event = NormalizedEvent::FileWrite(FileWrite {
+            pid: 10,
+            tid: 10,
+            ppid: 1,
+            uid: 0,
+            gid: 0,
+            comm: "crontab".to_string(),
+            exe_path: "/usr/bin/crontab".to_string(),
+            fd: 3,
+            count: 100,
+            resolved_path: "/etc/crontab".to_string(),
+            alert: false,
+            detection_type: None,
+            timestamp_ns: 123,
+        });
+
+        let alerts = engine.evaluate(&event);
+        assert!(alerts.iter().any(|a| a.rule_id == "BUILTIN-FILE-CRON-001"));
+    }
+
+    #[test]
+    fn builtin_cron_rule_does_not_match_crontab_bak() {
+        let engine = RuleEngine::new(&[]);
+        let event = NormalizedEvent::FileWrite(FileWrite {
+            pid: 10,
+            tid: 10,
+            ppid: 1,
+            uid: 0,
+            gid: 0,
+            comm: "crontab".to_string(),
+            exe_path: "/usr/bin/crontab".to_string(),
+            fd: 3,
+            count: 100,
+            resolved_path: "/etc/crontab.bak".to_string(),
+            alert: false,
+            detection_type: None,
+            timestamp_ns: 123,
+        });
+
+        let alerts = engine.evaluate(&event);
+        assert!(!alerts.iter().any(|a| a.rule_id == "BUILTIN-FILE-CRON-001"));
+    }
+
+    #[test]
+    fn builtin_systemd_rule_does_not_match_file_open() {
+        let engine = RuleEngine::new(&[]);
+        let event = NormalizedEvent::FileOpen(FileOpen {
+            pid: 10,
+            tid: 10,
+            ppid: 1,
+            uid: 0,
+            gid: 0,
+            comm: "systemctl".to_string(),
+            exe_path: "/usr/bin/systemctl".to_string(),
+            filename: "/etc/systemd/system/ssh.service".to_string(),
+            flags: 0,
+            filename_truncated: false,
+            alert: false,
+            detection_type: None,
+            timestamp_ns: 123,
+        });
+
+        let alerts = engine.evaluate(&event);
+        assert!(
+            !alerts
+                .iter()
+                .any(|a| a.rule_id == "BUILTIN-FILE-SYSTEMD-001")
+        );
     }
 }
