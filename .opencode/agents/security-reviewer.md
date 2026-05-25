@@ -15,6 +15,6 @@ Focus areas:
 - ABI risks: missing `#[repr(C)]`, layout drift between eBPF and userspace, variable-sized data crossing the boundary, incorrect alignment assumptions.
 - Runtime risks: privilege assumptions, missing shutdown paths, dropped events, misleading partial events, CI smoke flakiness.
 - Detection risks: noisy rules, weak event fields, missing parent/process context, unclear false positives, attacker behavior not actually represented by telemetry.
-- Portfolio risks: unclear docs, demos that require unexplained setup, features that cannot be validated.
+- Documentation risks: unclear docs, demos that require unexplained setup, features that cannot be validated.
 
 Do not rewrite code during review. If no findings are found, say so and list residual testing gaps.
