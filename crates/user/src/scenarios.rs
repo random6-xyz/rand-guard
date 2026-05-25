@@ -34,11 +34,16 @@ impl ScenarioEngine {
         match event {
             NormalizedEvent::ProcessStart(start) => {
                 let alerts = self.evaluate_drop_execute(start);
+                self.recent_processes.remove(&(start.pid, start.tid));
                 if is_reverse_shell_process(&start.comm) {
                     self.recent_processes
                         .insert((start.pid, start.tid), ProcessSnapshot::from(start));
                 }
                 alerts
+            }
+            NormalizedEvent::ProcessExit(exit) => {
+                self.recent_processes.remove(&(exit.pid, exit.tid));
+                Vec::new()
             }
             NormalizedEvent::FileWrite(file) => {
                 self.record_file_write(FileSnapshot::from_write(file))
@@ -58,6 +63,8 @@ impl ScenarioEngine {
             NormalizedEvent::FileRenameAt2(file) => {
                 self.record_file_write(FileSnapshot::from_renameat2(file))
             }
+            NormalizedEvent::FileUnlink(file) => self.remove_file_write(&file.filename),
+            NormalizedEvent::FileUnlinkAt(file) => self.remove_file_write(&file.filename),
             NormalizedEvent::NetworkConnect(connect) => self.evaluate_reverse_shell(connect),
             _ => Vec::new(),
         }
@@ -90,6 +97,11 @@ impl ScenarioEngine {
         if let Some(file) = file {
             self.recent_file_writes.insert(file.path.clone(), file);
         }
+        Vec::new()
+    }
+
+    fn remove_file_write(&mut self, path: &str) -> Vec<Alert> {
+        self.recent_file_writes.remove(path);
         Vec::new()
     }
 
@@ -270,6 +282,7 @@ fn drop_execute_alert(file: &FileSnapshot, start: &ProcessStart) -> Alert {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::normalize::{FileUnlink, ProcessExit};
 
     fn process_start(comm: &str, timestamp_ns: u64) -> NormalizedEvent {
         process_start_with_exe(comm, &format!("/usr/bin/{comm}"), timestamp_ns)
@@ -322,6 +335,35 @@ mod tests {
             filename_truncated: false,
             alert: false,
             detection_type: None,
+            timestamp_ns,
+        })
+    }
+
+    fn file_unlink(path: &str, timestamp_ns: u64) -> NormalizedEvent {
+        NormalizedEvent::FileUnlink(FileUnlink {
+            pid: 20,
+            tid: 20,
+            ppid: 1,
+            uid: 1000,
+            gid: 1000,
+            comm: "rm".to_string(),
+            exe_path: "/usr/bin/rm".to_string(),
+            filename: path.to_string(),
+            filename_truncated: false,
+            alert: false,
+            detection_type: None,
+            timestamp_ns,
+        })
+    }
+
+    fn process_exit(comm: &str, timestamp_ns: u64) -> NormalizedEvent {
+        NormalizedEvent::ProcessExit(ProcessExit {
+            pid: 10,
+            tid: 10,
+            comm: comm.to_string(),
+            group_dead: true,
+            uid: 1000,
+            gid: 1000,
             timestamp_ns,
         })
     }
@@ -390,6 +432,28 @@ mod tests {
     }
 
     #[test]
+    fn reverse_shell_replaces_candidate_after_non_candidate_exec() {
+        let mut engine = ScenarioEngine::new();
+
+        engine.evaluate(&process_start("sh", 1_000));
+        engine.evaluate(&process_start("curl", 1_500));
+        let alerts = engine.evaluate(&network_connect(4444, 2_000));
+
+        assert!(alerts.is_empty());
+    }
+
+    #[test]
+    fn reverse_shell_removes_candidate_on_exit() {
+        let mut engine = ScenarioEngine::new();
+
+        engine.evaluate(&process_start("sh", 1_000));
+        engine.evaluate(&process_exit("sh", 1_500));
+        let alerts = engine.evaluate(&network_connect(4444, 2_000));
+
+        assert!(alerts.is_empty());
+    }
+
+    #[test]
     fn drop_execute_alerts_on_written_temp_path_execution() {
         let mut engine = ScenarioEngine::new();
 
@@ -446,6 +510,17 @@ mod tests {
             "/tmp/rg-demo",
             11_000_001_001,
         ));
+
+        assert!(alerts.is_empty());
+    }
+
+    #[test]
+    fn drop_execute_unlink_removes_stale_write_snapshot() {
+        let mut engine = ScenarioEngine::new();
+
+        engine.evaluate(&file_write("/tmp/rg-demo", 1_000));
+        engine.evaluate(&file_unlink("/tmp/rg-demo", 1_500));
+        let alerts = engine.evaluate(&process_start_with_exe("rg-demo", "/tmp/rg-demo", 2_000));
 
         assert!(alerts.is_empty());
     }
