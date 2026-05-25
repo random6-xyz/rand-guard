@@ -57,8 +57,8 @@ Network collection is implemented for `connect`, `bind`, and `listen` syscall tr
 
 Build visibility before detection breadth:
 
-1. process execution and lifecycle: implemented with exec, fork, exit, and execveat correlation
-2. file and persistence-sensitive path visibility: implemented for open (`openat`, `openat2`), write (`write`, `writev`, `pwrite64`), rename (`rename`, `renameat`, `renameat2`), and unlink (`unlink`, `unlinkat`) families
+1. process execution and lifecycle: implemented with execve, fork, exit, and execveat correlation
+2. file and persistence-sensitive path visibility: implemented for open (`openat`, `openat2`), write (`write`, `writev`, `pwrite64`), rename (`rename`, `renameat`, `renameat2`), and unlink (`unlink`, `unlinkat`) families, with userspace watch/exclude path filtering
 3. network connection/listen visibility: implemented for connect, bind, and listen syscall families
 4. generic rule engine MVP beyond the current built-in persistence and network detections: implemented for single-event process/file/network matches
 5. scenario-based detections such as reverse shell, web shell execution, credential access, systemd persistence, and drop-and-execute

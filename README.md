@@ -7,7 +7,7 @@ The current agent can collect process, file, and opt-in network syscall telemetr
 ## Current Capabilities
 
 - Process lifecycle visibility for `execve`, `execveat`, `fork`, and `exit`.
-- File visibility for open (`openat`, `openat2`), write (`write`, `writev`, `pwrite64`), rename (`rename`, `renameat`, `renameat2`), and unlink (`unlink`, `unlinkat`) syscall families.
+- File visibility for open (`openat`, `openat2`), write (`write`, `writev`, `pwrite64`), rename (`rename`, `renameat`, `renameat2`), and unlink (`unlink`, `unlinkat`) syscall families, with `watch_paths`, `watch_patterns`, and `exclude_paths` filtering.
 - Network visibility for `connect`, `bind`, and `listen` syscall tracepoints when explicitly enabled.
 - Shared ABI in `crates/common` using fixed-layout `#[repr(C)]` structs.
 - eBPF to userspace delivery through the `EVENTS` ring buffer.

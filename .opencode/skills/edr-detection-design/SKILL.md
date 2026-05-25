@@ -23,7 +23,7 @@ For each detection, define:
 
 Current runtime status:
 
-- Process lifecycle telemetry is implemented for exec, fork, exit, and execveat correlation.
+- Process lifecycle telemetry is implemented for execve, fork, exit, and execveat correlation.
 - File telemetry is implemented for open, write, rename, and unlink syscall families, with watch/exclude filters.
 - Built-in persistence detections are configured under `[[detections.persistence]]` and evaluated in userspace.
 - Network telemetry is implemented for opt-in `connect`, `bind`, and `listen` syscall tracepoints.
@@ -33,8 +33,9 @@ Current runtime status:
 Next visibility and detection priorities:
 
 1. network correlation and richer listener context
-2. scenario detections (reverse shell, web shell, credential access, persistence)
+2. scenario-based detections (reverse shell, web shell, credential access, persistence)
 3. rule engine extensions (regex, time windows, multi-event correlation)
+4. hardening, performance measurement, packaging, and open-source collaboration docs
 
 ## Scenario Candidates
 
