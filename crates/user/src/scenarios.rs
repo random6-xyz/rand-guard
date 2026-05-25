@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use crate::normalize::{NetworkConnect, NormalizedEvent, ProcessStart};
+use crate::normalize::{
+    FilePWrite64, FileRename, FileRenameAt, FileRenameAt2, FileWrite, FileWriteV, NetworkConnect,
+    NormalizedEvent, ProcessStart,
+};
 use crate::rules::Alert;
 
 const SCENARIO_WINDOW_NS: u64 = 10_000_000_000;
@@ -9,15 +12,18 @@ const REVERSE_SHELL_PROCESS_NAMES: &[&str] = &[
     "sh", "bash", "dash", "zsh", "ksh", "mksh", "busybox", "nc", "ncat", "socat", "python",
     "python3", "perl", "php", "ruby",
 ];
+const DROP_EXEC_PATH_PREFIXES: &[&str] = &["/tmp/", "/var/tmp/", "/dev/shm/", "/run/user/"];
 
 pub struct ScenarioEngine {
     recent_processes: HashMap<(u32, u32), ProcessSnapshot>,
+    recent_file_writes: HashMap<String, FileSnapshot>,
 }
 
 impl ScenarioEngine {
     pub fn new() -> Self {
         Self {
             recent_processes: HashMap::new(),
+            recent_file_writes: HashMap::new(),
         }
     }
 
@@ -27,11 +33,30 @@ impl ScenarioEngine {
 
         match event {
             NormalizedEvent::ProcessStart(start) => {
+                let alerts = self.evaluate_drop_execute(start);
                 if is_reverse_shell_process(&start.comm) {
                     self.recent_processes
                         .insert((start.pid, start.tid), ProcessSnapshot::from(start));
                 }
-                Vec::new()
+                alerts
+            }
+            NormalizedEvent::FileWrite(file) => {
+                self.record_file_write(FileSnapshot::from_write(file))
+            }
+            NormalizedEvent::FileWriteV(file) => {
+                self.record_file_write(FileSnapshot::from_writev(file))
+            }
+            NormalizedEvent::FilePWrite64(file) => {
+                self.record_file_write(FileSnapshot::from_pwrite64(file))
+            }
+            NormalizedEvent::FileRename(file) => {
+                self.record_file_write(FileSnapshot::from_rename(file))
+            }
+            NormalizedEvent::FileRenameAt(file) => {
+                self.record_file_write(FileSnapshot::from_renameat(file))
+            }
+            NormalizedEvent::FileRenameAt2(file) => {
+                self.record_file_write(FileSnapshot::from_renameat2(file))
             }
             NormalizedEvent::NetworkConnect(connect) => self.evaluate_reverse_shell(connect),
             _ => Vec::new(),
@@ -57,6 +82,31 @@ impl ScenarioEngine {
     fn prune(&mut self, now_ns: u64) {
         self.recent_processes
             .retain(|_, process| within_window(process.timestamp_ns, now_ns));
+        self.recent_file_writes
+            .retain(|_, file| within_window(file.timestamp_ns, now_ns));
+    }
+
+    fn record_file_write(&mut self, file: Option<FileSnapshot>) -> Vec<Alert> {
+        if let Some(file) = file {
+            self.recent_file_writes.insert(file.path.clone(), file);
+        }
+        Vec::new()
+    }
+
+    fn evaluate_drop_execute(&self, start: &ProcessStart) -> Vec<Alert> {
+        if start.exe_path.is_empty() || !is_drop_execute_path(&start.exe_path) {
+            return Vec::new();
+        }
+
+        let Some(file) = self.recent_file_writes.get(&start.exe_path) else {
+            return Vec::new();
+        };
+
+        if !within_window(file.timestamp_ns, start.timestamp_ns) {
+            return Vec::new();
+        }
+
+        vec![drop_execute_alert(file, start)]
     }
 }
 
@@ -80,6 +130,51 @@ impl From<&ProcessStart> for ProcessSnapshot {
             comm: start.comm.clone(),
             exe_path: start.exe_path.clone(),
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct FileSnapshot {
+    timestamp_ns: u64,
+    path: String,
+    operation: &'static str,
+}
+
+impl FileSnapshot {
+    fn from_write(file: &FileWrite) -> Option<Self> {
+        Self::new(file.timestamp_ns, &file.resolved_path, "file_write")
+    }
+
+    fn from_writev(file: &FileWriteV) -> Option<Self> {
+        Self::new(file.timestamp_ns, &file.resolved_path, "file_write")
+    }
+
+    fn from_pwrite64(file: &FilePWrite64) -> Option<Self> {
+        Self::new(file.timestamp_ns, &file.resolved_path, "file_write")
+    }
+
+    fn from_rename(file: &FileRename) -> Option<Self> {
+        Self::new(file.timestamp_ns, &file.new_filename, "file_rename")
+    }
+
+    fn from_renameat(file: &FileRenameAt) -> Option<Self> {
+        Self::new(file.timestamp_ns, &file.new_filename, "file_rename")
+    }
+
+    fn from_renameat2(file: &FileRenameAt2) -> Option<Self> {
+        Self::new(file.timestamp_ns, &file.new_filename, "file_rename")
+    }
+
+    fn new(timestamp_ns: u64, path: &str, operation: &'static str) -> Option<Self> {
+        if path.is_empty() || !is_drop_execute_path(path) {
+            return None;
+        }
+
+        Some(Self {
+            timestamp_ns,
+            path: path.to_string(),
+            operation,
+        })
     }
 }
 
@@ -112,6 +207,12 @@ fn within_window(start_ns: u64, now_ns: u64) -> bool {
     now_ns >= start_ns && now_ns - start_ns <= SCENARIO_WINDOW_NS
 }
 
+fn is_drop_execute_path(path: &str) -> bool {
+    DROP_EXEC_PATH_PREFIXES
+        .iter()
+        .any(|prefix| path.starts_with(prefix))
+}
+
 fn reverse_shell_alert(process: &ProcessSnapshot, connect: &NetworkConnect) -> Alert {
     Alert {
         timestamp_ns: connect.timestamp_ns,
@@ -139,11 +240,42 @@ fn reverse_shell_alert(process: &ProcessSnapshot, connect: &NetworkConnect) -> A
     }
 }
 
+fn drop_execute_alert(file: &FileSnapshot, start: &ProcessStart) -> Alert {
+    Alert {
+        timestamp_ns: start.timestamp_ns,
+        rule_id: "BUILTIN-SCENARIO-DROP-EXEC-001".to_string(),
+        rule_name: "Suspicious binary drop and execute".to_string(),
+        rule_type: "scenario".to_string(),
+        severity: "high".to_string(),
+        action: "alert".to_string(),
+        source_event_type: "process_start".to_string(),
+        pid: Some(start.pid),
+        tid: Some(start.tid),
+        ppid: Some(start.ppid),
+        uid: Some(start.uid),
+        gid: Some(start.gid),
+        comm: Some(start.comm.clone()),
+        exe_path: Some(start.exe_path.clone()),
+        process_name: Some(start.comm.clone()),
+        parent_name: None,
+        path: Some(file.path.clone()),
+        operation: Some(file.operation.to_string()),
+        direction: None,
+        port: None,
+        addr: None,
+        family: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn process_start(comm: &str, timestamp_ns: u64) -> NormalizedEvent {
+        process_start_with_exe(comm, &format!("/usr/bin/{comm}"), timestamp_ns)
+    }
+
+    fn process_start_with_exe(comm: &str, exe_path: &str, timestamp_ns: u64) -> NormalizedEvent {
         NormalizedEvent::ProcessStart(ProcessStart {
             pid: 10,
             tid: 10,
@@ -151,10 +283,46 @@ mod tests {
             uid: 1000,
             gid: 1000,
             comm: comm.to_string(),
-            exe_path: format!("/usr/bin/{comm}"),
+            exe_path: exe_path.to_string(),
             source: Some("execve".to_string()),
             timestamp_ns,
             filename_truncated: false,
+        })
+    }
+
+    fn file_write(path: &str, timestamp_ns: u64) -> NormalizedEvent {
+        NormalizedEvent::FileWrite(FileWrite {
+            pid: 20,
+            tid: 20,
+            ppid: 1,
+            uid: 1000,
+            gid: 1000,
+            comm: "cp".to_string(),
+            exe_path: "/usr/bin/cp".to_string(),
+            fd: 3,
+            count: 100,
+            resolved_path: path.to_string(),
+            alert: false,
+            detection_type: None,
+            timestamp_ns,
+        })
+    }
+
+    fn file_rename(new_path: &str, timestamp_ns: u64) -> NormalizedEvent {
+        NormalizedEvent::FileRename(FileRename {
+            pid: 20,
+            tid: 20,
+            ppid: 1,
+            uid: 1000,
+            gid: 1000,
+            comm: "mv".to_string(),
+            exe_path: "/usr/bin/mv".to_string(),
+            old_filename: "/home/alice/demo".to_string(),
+            new_filename: new_path.to_string(),
+            filename_truncated: false,
+            alert: false,
+            detection_type: None,
+            timestamp_ns,
         })
     }
 
@@ -217,6 +385,67 @@ mod tests {
 
         engine.evaluate(&process_start("curl", 1_000));
         let alerts = engine.evaluate(&network_connect(4444, 2_000));
+
+        assert!(alerts.is_empty());
+    }
+
+    #[test]
+    fn drop_execute_alerts_on_written_temp_path_execution() {
+        let mut engine = ScenarioEngine::new();
+
+        assert!(
+            engine
+                .evaluate(&file_write("/tmp/rg-demo", 1_000))
+                .is_empty()
+        );
+        let alerts = engine.evaluate(&process_start_with_exe("rg-demo", "/tmp/rg-demo", 2_000));
+
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].rule_id, "BUILTIN-SCENARIO-DROP-EXEC-001");
+        assert_eq!(alerts[0].path, Some("/tmp/rg-demo".to_string()));
+        assert_eq!(alerts[0].operation, Some("file_write".to_string()));
+        assert_eq!(alerts[0].process_name, Some("rg-demo".to_string()));
+    }
+
+    #[test]
+    fn drop_execute_alerts_on_renamed_temp_path_execution() {
+        let mut engine = ScenarioEngine::new();
+
+        engine.evaluate(&file_rename("/dev/shm/rg-demo", 1_000));
+        let alerts = engine.evaluate(&process_start_with_exe(
+            "rg-demo",
+            "/dev/shm/rg-demo",
+            2_000,
+        ));
+
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].operation, Some("file_rename".to_string()));
+    }
+
+    #[test]
+    fn drop_execute_ignores_non_staging_paths() {
+        let mut engine = ScenarioEngine::new();
+
+        engine.evaluate(&file_write("/home/alice/rg-demo", 1_000));
+        let alerts = engine.evaluate(&process_start_with_exe(
+            "rg-demo",
+            "/home/alice/rg-demo",
+            2_000,
+        ));
+
+        assert!(alerts.is_empty());
+    }
+
+    #[test]
+    fn drop_execute_ignores_events_outside_window() {
+        let mut engine = ScenarioEngine::new();
+
+        engine.evaluate(&file_write("/tmp/rg-demo", 1_000));
+        let alerts = engine.evaluate(&process_start_with_exe(
+            "rg-demo",
+            "/tmp/rg-demo",
+            11_000_001_001,
+        ));
 
         assert!(alerts.is_empty());
     }
