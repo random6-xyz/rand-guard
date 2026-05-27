@@ -268,6 +268,18 @@ pub enum OutputFormat {
 pub struct PerformanceConfig {
     pub max_events_per_second: u32,
     pub drop_when_full: bool,
+    #[serde(default = "default_max_process_cache_entries")]
+    pub max_process_cache_entries: usize,
+    #[serde(default = "default_max_pending_exec_sources")]
+    pub max_pending_exec_sources: usize,
+}
+
+fn default_max_process_cache_entries() -> usize {
+    5000
+}
+
+fn default_max_pending_exec_sources() -> usize {
+    500
 }
 
 #[derive(Debug, Default, Deserialize, PartialEq, Eq)]
@@ -342,6 +354,8 @@ mod tests {
         assert_eq!(config.detections.network[0].ports, [4444, 1337, 31337]);
         assert_eq!(config.output.output_type, OutputType::Stdout);
         assert_eq!(config.performance.max_events_per_second, 5000);
+        assert_eq!(config.performance.max_process_cache_entries, 5000);
+        assert_eq!(config.performance.max_pending_exec_sources, 500);
         config
             .validate_current_runtime()
             .expect("example config should match current runtime support");

@@ -193,7 +193,10 @@ async fn main() -> anyhow::Result<()> {
     let ring_buf = RingBuf::try_from(ebpf.map_mut("EVENTS").context("EVENTS map not found")?)?;
     let mut async_ring = AsyncFd::new(ring_buf)?;
     let mut output = output::JsonOutput::stdout();
-    let mut table = ProcessTable::new();
+    let mut table = ProcessTable::with_limits(
+        config.performance.max_process_cache_entries,
+        config.performance.max_pending_exec_sources,
+    );
     let rule_engine = rules::RuleEngine::new(&config.rules);
     let mut rate_limiter = RateLimiter::new(config.performance.max_events_per_second);
 
