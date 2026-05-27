@@ -18,7 +18,7 @@ use tokio::time::{Duration, Instant, sleep};
 use tracing::{info, warn};
 
 use crate::dispatch::{DispatchContext, DispatchResult};
-use crate::output::HealthRecord;
+use crate::output::{HealthRecord, read_rss_kb};
 use crate::process_table::ProcessTable;
 use crate::rate_limiter::RateLimiter;
 
@@ -289,6 +289,7 @@ async fn main() -> anyhow::Result<()> {
                     process_table_size: table.record_count(),
                     pending_exec_source_size: table.pending_exec_source_count(),
                     uptime_secs: start_time.elapsed().as_secs(),
+                    rss_kb: read_rss_kb(),
                 };
                 if let Err(e) = output.write_health(&record) {
                     warn!(error = %e, "failed to write health record");
@@ -312,6 +313,7 @@ async fn main() -> anyhow::Result<()> {
         process_table_size: table.record_count(),
         pending_exec_source_size: table.pending_exec_source_count(),
         uptime_secs: start_time.elapsed().as_secs(),
+        rss_kb: read_rss_kb(),
     };
     if let Err(e) = output.write_health(&record) {
         warn!(error = %e, "failed to write final health record");

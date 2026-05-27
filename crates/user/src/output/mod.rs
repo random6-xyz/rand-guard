@@ -18,7 +18,7 @@ pub use file::{
     format_file_writev_json,
 };
 #[allow(unused_imports)]
-pub use health::{HealthRecord, format_health_json};
+pub use health::{HealthRecord, format_health_json, read_rss_kb};
 #[allow(unused_imports)]
 pub use network::{
     format_network_bind_json, format_network_connect_json, format_network_listen_json,
@@ -538,6 +538,7 @@ mod tests {
             process_table_size: 42,
             pending_exec_source_size: 1,
             uptime_secs: 60,
+            rss_kb: Some(8192),
         };
 
         let value: serde_json::Value = serde_json::from_str(&format_health_json(&record))
@@ -553,6 +554,28 @@ mod tests {
         assert_eq!(value["process_table_size"], 42);
         assert_eq!(value["pending_exec_source_size"], 1);
         assert_eq!(value["uptime_secs"], 60);
+        assert_eq!(value["rss_kb"], 8192);
+    }
+
+    #[test]
+    fn formats_health_record_with_null_rss() {
+        let record = HealthRecord {
+            raw_events_read: 0,
+            normalized_events_output: 0,
+            alerts_output: 0,
+            userspace_filtered: 0,
+            userspace_rate_limited: 0,
+            invalid_schema: 0,
+            process_table_size: 0,
+            pending_exec_source_size: 0,
+            uptime_secs: 0,
+            rss_kb: None,
+        };
+
+        let value: serde_json::Value = serde_json::from_str(&format_health_json(&record))
+            .expect("health record with null rss should be valid JSON");
+
+        assert!(value["rss_kb"].is_null());
     }
 
     #[test]
@@ -567,6 +590,7 @@ mod tests {
             process_table_size: 0,
             pending_exec_source_size: 0,
             uptime_secs: 0,
+            rss_kb: None,
         };
         let mut output = JsonOutput::new(Vec::new());
 

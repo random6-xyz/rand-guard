@@ -9,6 +9,7 @@ pub struct HealthRecord {
     pub process_table_size: usize,
     pub pending_exec_source_size: usize,
     pub uptime_secs: u64,
+    pub rss_kb: Option<u64>,
 }
 
 pub fn format_health_json(record: &HealthRecord) -> String {
@@ -23,6 +24,49 @@ pub fn format_health_json(record: &HealthRecord) -> String {
         "process_table_size": record.process_table_size,
         "pending_exec_source_size": record.pending_exec_source_size,
         "uptime_secs": record.uptime_secs,
+        "rss_kb": record.rss_kb,
     })
     .to_string()
+}
+
+pub fn read_rss_kb() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    parse_rss_kb(&status)
+}
+
+fn parse_rss_kb(status: &str) -> Option<u64> {
+    for line in status.lines() {
+        if let Some(rest) = line.strip_prefix("VmRSS:") {
+            let trimmed = rest.trim();
+            if let Some(kb_str) = trimmed.strip_suffix("kB") {
+                return kb_str.trim().parse().ok();
+            }
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_rss_from_proc_status() {
+        let sample = "\
+Name:\tedr-user
+Umask:\t0022
+State:\tS (sleeping)
+VmPeak:\t   12345 kB
+VmSize:\t   11000 kB
+VmRSS:\t    8192 kB
+VmData:\t    4096 kB
+";
+        assert_eq!(parse_rss_kb(sample), Some(8192));
+    }
+
+    #[test]
+    fn returns_none_when_rss_missing() {
+        let sample = "Name:\tedr-user\nState:\tS (sleeping)\n";
+        assert_eq!(parse_rss_kb(sample), None);
+    }
 }
