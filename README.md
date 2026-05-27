@@ -43,6 +43,56 @@ The current agent can collect process, file, and opt-in network syscall telemetr
 - `bpf-linker` for building the eBPF object.
 - Root or suitable capabilities for actual agent execution.
 
+## Kernel Compatibility
+
+The eBPF programs use features that require specific kernel versions:
+
+- **Bounded loops** (kernel 5.3+): Used in `file_passes_filter()` for prefix matching with compile-time constant bounds (`FILE_FILTER_MAX_PREFIXES = 8`, `FILE_FILTER_PREFIX_LEN = 64`).
+- **Ring buffer** (kernel 5.8+): The `EVENTS` map uses `BPF_MAP_TYPE_RINGBUF` for efficient event delivery from kernel to userspace.
+- **BTF support**: Required for CO-RE (Compile Once – Run Everywhere) and modern BPF program loading. Most distributions since Linux 5.2 include BTF.
+- **Tracepoint programs**: Attached to kernel tracepoints (`sched_process_exec`, `sched_process_exit`, `sched_process_fork`, `sys_enter_*`, `sys_exit_*`).
+
+### Capability Requirements
+
+Loading eBPF programs requires one of:
+
+- **Root** (UID 0)
+- **CAP_BPF + CAP_PERFMON** (kernel 5.8+): Fine-grained capabilities for BPF operations and performance monitoring.
+- **CAP_SYS_ADMIN** (legacy): Older kernels require this broad capability.
+
+Check capabilities on a running system:
+
+```sh
+# Check if running as root
+id -u
+
+# Check effective capabilities
+cat /proc/self/status | grep Cap
+
+# Grant capabilities to the binary (requires root)
+sudo setcap 'cap_bpf,cap_perfmon+ep' target/release/edr-user
+```
+
+### Verified Kernels
+
+Tested on:
+
+- Ubuntu 22.04+ (kernel 5.15+)
+- Fedora 38+ (kernel 6.2+)
+- Debian 12+ (kernel 6.1+)
+
+Older kernels (4.18–5.2) may work with limitations but are not actively tested. Kernels before 4.15 lack eBPF tracepoint support entirely.
+
+### eBPF Verifier Constraints
+
+All eBPF programs satisfy verifier requirements:
+
+- **No unbounded loops**: All loops use compile-time constant bounds.
+- **Bounded memory access**: String reads use `bpf_probe_read_user_str_bytes()` with fixed-size buffers.
+- **Fixed stack usage**: No dynamic allocation; event structs are `#[repr(C)]` with known sizes.
+- **No recursion or function pointer calls**: Programs use direct function calls only.
+- **Helper call validation**: Failed helper calls discard incomplete events rather than emit misleading data.
+
 Install typical Rust tooling:
 
 ```sh
