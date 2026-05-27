@@ -22,6 +22,11 @@ use crate::output::{HealthRecord, read_rss_kb};
 use crate::process_table::ProcessTable;
 use crate::rate_limiter::RateLimiter;
 
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct FilterPod(edr_common::FileFilterConfig);
+unsafe impl aya::Pod for FilterPod {}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config_path = std::env::var("EDR_CONFIG").unwrap_or_else(|_| "config.toml".to_string());
@@ -188,6 +193,24 @@ async fn main() -> anyhow::Result<()> {
                 "sys_enter_listen",
             )?;
         }
+    }
+
+    if let Some(filter_map) = ebpf.map_mut("FILE_FILTER") {
+        let mut filter = edr_common::FileFilterConfig::empty();
+        let watch_paths = &config.file.watch_paths;
+        for (i, path) in watch_paths
+            .iter()
+            .take(edr_common::FILE_FILTER_MAX_PREFIXES)
+            .enumerate()
+        {
+            let bytes = path.as_bytes();
+            let len = bytes.len().min(edr_common::FILE_FILTER_PREFIX_LEN);
+            filter.prefixes[i][..len].copy_from_slice(&bytes[..len]);
+            filter.prefix_lens[i] = len as u32;
+            filter.prefix_count += 1;
+        }
+        let mut array = aya::maps::Array::<_, FilterPod>::try_from(filter_map)?;
+        array.set(0, FilterPod(filter), 0)?;
     }
 
     let ring_buf = RingBuf::try_from(ebpf.map_mut("EVENTS").context("EVENTS map not found")?)?;

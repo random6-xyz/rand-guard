@@ -12,6 +12,8 @@ use edr_common::{
 };
 
 use crate::EVENTS;
+use crate::FILE_FILTER;
+use crate::helpers::file_passes_filter;
 
 #[tracepoint]
 pub fn sys_enter_openat(ctx: TracePointContext) -> u32 {
@@ -67,6 +69,15 @@ fn try_sys_enter_openat(ctx: TracePointContext) -> Result<u32, i64> {
                         entry.discard(0);
                         return Err(ret);
                     }
+                }
+            }
+
+            if let Some(filter) = FILE_FILTER.get(0) {
+                let fname = &(*ptr).filename;
+                let fname_len = (*ptr).filename_len;
+                if !file_passes_filter(filter, fname, fname_len) {
+                    entry.discard(0);
+                    return Ok(0);
                 }
             }
         }
@@ -137,6 +148,15 @@ fn try_sys_enter_openat2(ctx: TracePointContext) -> Result<u32, i64> {
                         entry.discard(0);
                         return Err(ret);
                     }
+                }
+            }
+
+            if let Some(filter) = FILE_FILTER.get(0) {
+                let fname = &(*ptr).filename;
+                let fname_len = (*ptr).filename_len;
+                if !file_passes_filter(filter, fname, fname_len) {
+                    entry.discard(0);
+                    return Ok(0);
                 }
             }
         }
