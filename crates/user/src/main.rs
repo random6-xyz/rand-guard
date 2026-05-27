@@ -16,7 +16,7 @@ use tokio::signal;
 use tokio::time::{Duration, Instant, sleep};
 use tracing::{info, warn};
 
-use crate::dispatch::DispatchContext;
+use crate::dispatch::{DispatchContext, DispatchResult};
 use crate::output::HealthRecord;
 use crate::process_table::ProcessTable;
 
@@ -202,9 +202,9 @@ async fn main() -> anyhow::Result<()> {
     let mut raw_events_read: u64 = 0;
     let mut normalized_events_output: u64 = 0;
     let mut alerts_output: u64 = 0;
-    let userspace_filtered: u64 = 0;
+    let mut userspace_filtered: u64 = 0;
     let userspace_rate_limited: u64 = 0;
-    let invalid_schema: u64 = 0;
+    let mut invalid_schema: u64 = 0;
 
     let health_interval = Duration::from_secs(10);
     let mut next_health = start_time + health_interval;
@@ -237,18 +237,27 @@ async fn main() -> anyhow::Result<()> {
                         ci_smoke_file_open_seen: &mut ci_smoke_file_open_seen,
                     };
 
-                    let normalized = dispatch::dispatch_event(bytes, &mut dispatch_ctx);
+                    let result = dispatch::dispatch_event(bytes, &mut dispatch_ctx);
 
-                    if let Some(event) = normalized {
-                        normalized_events_output += 1;
-                        output.write_normalized(&event)?;
-                        for alert in rule_engine.evaluate(&event) {
-                            alerts_output += 1;
-                            output.write_alert(&alert)?;
+                    match result {
+                        DispatchResult::Normalized(event) => {
+                            normalized_events_output += 1;
+                            output.write_normalized(&event)?;
+                            for alert in rule_engine.evaluate(&event) {
+                                alerts_output += 1;
+                                output.write_alert(&alert)?;
+                            }
+                            if ci_smoke_start_seen && ci_smoke_rel_or_exit_seen && ci_smoke_file_open_seen {
+                                return Ok(());
+                            }
                         }
-                        if ci_smoke_start_seen && ci_smoke_rel_or_exit_seen && ci_smoke_file_open_seen {
-                            return Ok(());
+                        DispatchResult::Filtered => {
+                            userspace_filtered += 1;
                         }
+                        DispatchResult::InvalidSchema => {
+                            invalid_schema += 1;
+                        }
+                        DispatchResult::Unsupported | DispatchResult::Internal => {}
                     }
                 }
                 guard.clear_ready();
