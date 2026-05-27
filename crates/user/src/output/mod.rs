@@ -534,9 +534,13 @@ mod tests {
             alerts_output: 3,
             userspace_filtered: 15,
             userspace_rate_limited: 2,
-            invalid_schema: 0,
+            userspace_invalid_schema: 1,
+            userspace_unsupported_kind: 0,
+            userspace_output_failures: 0,
             process_table_size: 42,
             pending_exec_source_size: 1,
+            process_records_evicted: 5,
+            pending_sources_evicted: 0,
             uptime_secs: 60,
             rss_kb: Some(8192),
         };
@@ -550,9 +554,13 @@ mod tests {
         assert_eq!(value["alerts_output"], 3);
         assert_eq!(value["userspace_filtered"], 15);
         assert_eq!(value["userspace_rate_limited"], 2);
-        assert_eq!(value["invalid_schema"], 0);
+        assert_eq!(value["userspace_invalid_schema"], 1);
+        assert_eq!(value["userspace_unsupported_kind"], 0);
+        assert_eq!(value["userspace_output_failures"], 0);
         assert_eq!(value["process_table_size"], 42);
         assert_eq!(value["pending_exec_source_size"], 1);
+        assert_eq!(value["process_records_evicted"], 5);
+        assert_eq!(value["pending_sources_evicted"], 0);
         assert_eq!(value["uptime_secs"], 60);
         assert_eq!(value["rss_kb"], 8192);
     }
@@ -565,9 +573,13 @@ mod tests {
             alerts_output: 0,
             userspace_filtered: 0,
             userspace_rate_limited: 0,
-            invalid_schema: 0,
+            userspace_invalid_schema: 0,
+            userspace_unsupported_kind: 0,
+            userspace_output_failures: 0,
             process_table_size: 0,
             pending_exec_source_size: 0,
+            process_records_evicted: 0,
+            pending_sources_evicted: 0,
             uptime_secs: 0,
             rss_kb: None,
         };
@@ -586,9 +598,13 @@ mod tests {
             alerts_output: 0,
             userspace_filtered: 0,
             userspace_rate_limited: 0,
-            invalid_schema: 0,
+            userspace_invalid_schema: 0,
+            userspace_unsupported_kind: 0,
+            userspace_output_failures: 0,
             process_table_size: 0,
             pending_exec_source_size: 0,
+            process_records_evicted: 0,
+            pending_sources_evicted: 0,
             uptime_secs: 0,
             rss_kb: None,
         };

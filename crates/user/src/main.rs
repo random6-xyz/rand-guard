@@ -210,7 +210,9 @@ async fn main() -> anyhow::Result<()> {
     let mut alerts_output: u64 = 0;
     let mut userspace_filtered: u64 = 0;
     let mut userspace_rate_limited: u64 = 0;
-    let mut invalid_schema: u64 = 0;
+    let mut userspace_invalid_schema: u64 = 0;
+    let mut userspace_unsupported_kind: u64 = 0;
+    let mut userspace_output_failures: u64 = 0;
 
     let health_interval = Duration::from_secs(10);
     let mut next_health = start_time + health_interval;
@@ -252,10 +254,17 @@ async fn main() -> anyhow::Result<()> {
                                 continue;
                             }
                             normalized_events_output += 1;
-                            output.write_normalized(&event)?;
+                            if let Err(e) = output.write_normalized(&event) {
+                                userspace_output_failures += 1;
+                                warn!(error = %e, "failed to write normalized event");
+                                continue;
+                            }
                             for alert in rule_engine.evaluate(&event) {
                                 alerts_output += 1;
-                                output.write_alert(&alert)?;
+                                if let Err(e) = output.write_alert(&alert) {
+                                    userspace_output_failures += 1;
+                                    warn!(error = %e, "failed to write alert");
+                                }
                             }
                             if ci_smoke_start_seen && ci_smoke_rel_or_exit_seen && ci_smoke_file_open_seen {
                                 return Ok(());
@@ -265,9 +274,12 @@ async fn main() -> anyhow::Result<()> {
                             userspace_filtered += 1;
                         }
                         DispatchResult::InvalidSchema => {
-                            invalid_schema += 1;
+                            userspace_invalid_schema += 1;
                         }
-                        DispatchResult::Unsupported | DispatchResult::Internal => {}
+                        DispatchResult::Unsupported => {
+                            userspace_unsupported_kind += 1;
+                        }
+                        DispatchResult::Internal => {}
                     }
                 }
                 guard.clear_ready();
@@ -285,9 +297,13 @@ async fn main() -> anyhow::Result<()> {
                     alerts_output,
                     userspace_filtered,
                     userspace_rate_limited,
-                    invalid_schema,
+                    userspace_invalid_schema,
+                    userspace_unsupported_kind,
+                    userspace_output_failures,
                     process_table_size: table.record_count(),
                     pending_exec_source_size: table.pending_exec_source_count(),
+                    process_records_evicted: table.records_evicted,
+                    pending_sources_evicted: table.pending_evicted,
                     uptime_secs: start_time.elapsed().as_secs(),
                     rss_kb: read_rss_kb(),
                 };
@@ -309,9 +325,13 @@ async fn main() -> anyhow::Result<()> {
         alerts_output,
         userspace_filtered,
         userspace_rate_limited,
-        invalid_schema,
+        userspace_invalid_schema,
+        userspace_unsupported_kind,
+        userspace_output_failures,
         process_table_size: table.record_count(),
         pending_exec_source_size: table.pending_exec_source_count(),
+        process_records_evicted: table.records_evicted,
+        pending_sources_evicted: table.pending_evicted,
         uptime_secs: start_time.elapsed().as_secs(),
         rss_kb: read_rss_kb(),
     };
