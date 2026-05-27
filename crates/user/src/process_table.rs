@@ -154,6 +154,14 @@ impl ProcessTable {
     pub fn get(&self, key: &(u32, u32)) -> Option<&ProcessRecord> {
         self.records.get(key)
     }
+
+    pub fn record_count(&self) -> usize {
+        self.records.len()
+    }
+
+    pub fn pending_exec_source_count(&self) -> usize {
+        self.pending_exec_sources.len()
+    }
 }
 
 pub(crate) fn fixed_string(bytes: &[u8], max_len: usize) -> String {

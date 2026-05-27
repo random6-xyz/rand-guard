@@ -13,10 +13,11 @@ use anyhow::Context;
 use aya::maps::ring_buf::RingBuf;
 use tokio::io::unix::AsyncFd;
 use tokio::signal;
-use tokio::time::{Duration, sleep};
+use tokio::time::{Duration, Instant, sleep};
 use tracing::{info, warn};
 
 use crate::dispatch::DispatchContext;
+use crate::output::HealthRecord;
 use crate::process_table::ProcessTable;
 
 #[tokio::main]
@@ -197,6 +198,17 @@ async fn main() -> anyhow::Result<()> {
     let mut ci_smoke_rel_or_exit_seen = false;
     let mut ci_smoke_file_open_seen = false;
 
+    let start_time = Instant::now();
+    let mut raw_events_read: u64 = 0;
+    let mut normalized_events_output: u64 = 0;
+    let mut alerts_output: u64 = 0;
+    let userspace_filtered: u64 = 0;
+    let userspace_rate_limited: u64 = 0;
+    let invalid_schema: u64 = 0;
+
+    let health_interval = Duration::from_secs(10);
+    let mut next_health = start_time + health_interval;
+
     info!(
         agent = %config.agent.id,
         mode = ?config.agent.mode,
@@ -212,6 +224,7 @@ async fn main() -> anyhow::Result<()> {
                 let ring_buf = guard.get_inner_mut();
                 while let Some(item) = ring_buf.next() {
                     let bytes: &[u8] = &item;
+                    raw_events_read += 1;
 
                     let mut dispatch_ctx = DispatchContext {
                         table: &mut table,
@@ -227,8 +240,10 @@ async fn main() -> anyhow::Result<()> {
                     let normalized = dispatch::dispatch_event(bytes, &mut dispatch_ctx);
 
                     if let Some(event) = normalized {
+                        normalized_events_output += 1;
                         output.write_normalized(&event)?;
                         for alert in rule_engine.evaluate(&event) {
+                            alerts_output += 1;
                             output.write_alert(&alert)?;
                         }
                         if ci_smoke_start_seen && ci_smoke_rel_or_exit_seen && ci_smoke_file_open_seen {
@@ -244,11 +259,43 @@ async fn main() -> anyhow::Result<()> {
                 }
                 anyhow::bail!("CI smoke timeout: no ringbuf event received within 10 seconds.");
             },
+            _ = sleep(next_health.saturating_duration_since(Instant::now())), if !ci_smoke => {
+                let record = HealthRecord {
+                    raw_events_read,
+                    normalized_events_output,
+                    alerts_output,
+                    userspace_filtered,
+                    userspace_rate_limited,
+                    invalid_schema,
+                    process_table_size: table.record_count(),
+                    pending_exec_source_size: table.pending_exec_source_count(),
+                    uptime_secs: start_time.elapsed().as_secs(),
+                };
+                if let Err(e) = output.write_health(&record) {
+                    warn!(error = %e, "failed to write health record");
+                }
+                next_health = Instant::now() + health_interval;
+            },
             _ = signal::ctrl_c() => {
                 info!("shutting down");
                 break;
             }
         }
+    }
+
+    let record = HealthRecord {
+        raw_events_read,
+        normalized_events_output,
+        alerts_output,
+        userspace_filtered,
+        userspace_rate_limited,
+        invalid_schema,
+        process_table_size: table.record_count(),
+        pending_exec_source_size: table.pending_exec_source_count(),
+        uptime_secs: start_time.elapsed().as_secs(),
+    };
+    if let Err(e) = output.write_health(&record) {
+        warn!(error = %e, "failed to write final health record");
     }
 
     Ok(())
