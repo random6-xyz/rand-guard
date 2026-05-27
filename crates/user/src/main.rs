@@ -7,6 +7,7 @@ mod normalize;
 mod output;
 mod privilege;
 mod process_table;
+mod rate_limiter;
 mod rules;
 
 use anyhow::Context;
@@ -19,6 +20,7 @@ use tracing::{info, warn};
 use crate::dispatch::{DispatchContext, DispatchResult};
 use crate::output::HealthRecord;
 use crate::process_table::ProcessTable;
+use crate::rate_limiter::RateLimiter;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -193,6 +195,7 @@ async fn main() -> anyhow::Result<()> {
     let mut output = output::JsonOutput::stdout();
     let mut table = ProcessTable::new();
     let rule_engine = rules::RuleEngine::new(&config.rules);
+    let mut rate_limiter = RateLimiter::new(config.performance.max_events_per_second);
 
     let mut ci_smoke_start_seen = false;
     let mut ci_smoke_rel_or_exit_seen = false;
@@ -203,7 +206,7 @@ async fn main() -> anyhow::Result<()> {
     let mut normalized_events_output: u64 = 0;
     let mut alerts_output: u64 = 0;
     let mut userspace_filtered: u64 = 0;
-    let userspace_rate_limited: u64 = 0;
+    let mut userspace_rate_limited: u64 = 0;
     let mut invalid_schema: u64 = 0;
 
     let health_interval = Duration::from_secs(10);
@@ -241,6 +244,10 @@ async fn main() -> anyhow::Result<()> {
 
                     match result {
                         DispatchResult::Normalized(event) => {
+                            if !rate_limiter.allow(&event) {
+                                userspace_rate_limited += 1;
+                                continue;
+                            }
                             normalized_events_output += 1;
                             output.write_normalized(&event)?;
                             for alert in rule_engine.evaluate(&event) {
