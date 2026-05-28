@@ -10,89 +10,122 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  rust-check:
-    name: Rust check / fmt / clippy
+  fmt:
+    name: Format
     runs-on: ubuntu-24.04
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install stable Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: rustfmt
 
-      - name: Install nightly Rust for eBPF
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: rust-src, rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      - run: cargo run -p xtask -- ci-format
 
-      - name: Format check all
-        run: cargo run -p xtask -- ci-format
-
-      - name: Cargo check all
-        run: cargo run -p xtask -- check
-
-      - name: Cargo clippy all
-        run: cargo run -p xtask -- clippy
-
-      - name: Cargo test all
-        run: cargo run -p xtask -- test
-
-  build:
-    name: Build all
+  check:
+    name: Check
     runs-on: ubuntu-24.04
-    
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install stable Rust
-        uses: dtolnay/rust-toolchain@stable
-      
-      - name: Install nightly Rust for eBPF
-        uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rust-src
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo run -p xtask -- check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo run -p xtask -- clippy
+
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo run -p xtask -- test
+
+  build:
+    name: Build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cache bpf-linker
+        uses: actions/cache@v4
+        id: bpf-linker-cache
+        with:
+          path: ~/.cargo/bin/bpf-linker
+          key: bpf-linker-${{ runner.os }}-v0.1
 
       - name: Install bpf-linker
-        run: |
-          if ! command -v bpf-linker >/dev/null; then
-            cargo install bpf-linker --locked
-          fi
+        if: steps.bpf-linker-cache.outputs.cache-hit != 'true'
+        run: cargo install bpf-linker --locked
 
-      - name: Build all
-        run: cargo run -p xtask -- build
+      - run: cargo run -p xtask -- build
 
   ebpf-smoke:
     name: eBPF smoke test
     runs-on: ubuntu-24.04
-    needs: [rust-check, build]
+    needs: [fmt, check, clippy, test, build]
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install stable Rust
-        uses: dtolnay/rust-toolchain@stable
-      
-      - name: Install nightly Rust for eBPF
-        uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rust-src
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2
 
-      - name: Install bpf-linker and runtime tools
+      - name: Cache bpf-linker
+        uses: actions/cache@v4
+        id: bpf-linker-cache
+        with:
+          path: ~/.cargo/bin/bpf-linker
+          key: bpf-linker-${{ runner.os }}-v0.1
+
+      - name: Install bpf-linker
+        if: steps.bpf-linker-cache.outputs.cache-hit != 'true'
+        run: cargo install bpf-linker --locked
+
+      - name: Install runtime tools
         run: |
-          if ! command -v bpf-linker >/dev/null; then
-            cargo install bpf-linker --locked
-          fi
           sudo apt-get update
           sudo apt-get install -y \
             linux-tools-common \
@@ -107,8 +140,4 @@ jobs:
           which bpftool || true
           sudo bpftool feature probe kernel || true
 
-      - name: Build
-        run: cargo run -p xtask -- build
-
-      - name: Smoke test load/unload
-        run: cargo run -p xtask -- ci-smoke
+      - run: cargo run -p xtask -- ci-smoke
