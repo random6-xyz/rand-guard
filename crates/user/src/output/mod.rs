@@ -1,6 +1,7 @@
 mod alert;
 mod dispatcher;
 mod file;
+mod health;
 mod network;
 mod process;
 mod writer;
@@ -16,6 +17,8 @@ pub use file::{
     format_file_unlink_json, format_file_unlinkat_json, format_file_write_json,
     format_file_writev_json,
 };
+#[allow(unused_imports)]
+pub use health::{HealthRecord, format_health_json, read_rss_kb};
 #[allow(unused_imports)]
 pub use network::{
     format_network_bind_json, format_network_connect_json, format_network_listen_json,
@@ -521,6 +524,102 @@ mod tests {
             serde_json::from_str(line.trim_end()).expect("written alert should be valid JSON");
         assert_eq!(value["event_type"], "alert");
         assert_eq!(value["port"], 4444);
+    }
+
+    #[test]
+    fn formats_health_record_as_json() {
+        let record = HealthRecord {
+            raw_events_read: 100,
+            normalized_events_output: 80,
+            alerts_output: 3,
+            userspace_filtered: 15,
+            userspace_rate_limited: 2,
+            userspace_invalid_schema: 1,
+            userspace_unsupported_kind: 0,
+            userspace_output_failures: 0,
+            process_table_size: 42,
+            pending_exec_source_size: 1,
+            process_records_evicted: 5,
+            pending_sources_evicted: 0,
+            uptime_secs: 60,
+            rss_kb: Some(8192),
+        };
+
+        let value: serde_json::Value = serde_json::from_str(&format_health_json(&record))
+            .expect("health record output should be valid JSON");
+
+        assert_eq!(value["event_type"], "health");
+        assert_eq!(value["raw_events_read"], 100);
+        assert_eq!(value["normalized_events_output"], 80);
+        assert_eq!(value["alerts_output"], 3);
+        assert_eq!(value["userspace_filtered"], 15);
+        assert_eq!(value["userspace_rate_limited"], 2);
+        assert_eq!(value["userspace_invalid_schema"], 1);
+        assert_eq!(value["userspace_unsupported_kind"], 0);
+        assert_eq!(value["userspace_output_failures"], 0);
+        assert_eq!(value["process_table_size"], 42);
+        assert_eq!(value["pending_exec_source_size"], 1);
+        assert_eq!(value["process_records_evicted"], 5);
+        assert_eq!(value["pending_sources_evicted"], 0);
+        assert_eq!(value["uptime_secs"], 60);
+        assert_eq!(value["rss_kb"], 8192);
+    }
+
+    #[test]
+    fn formats_health_record_with_null_rss() {
+        let record = HealthRecord {
+            raw_events_read: 0,
+            normalized_events_output: 0,
+            alerts_output: 0,
+            userspace_filtered: 0,
+            userspace_rate_limited: 0,
+            userspace_invalid_schema: 0,
+            userspace_unsupported_kind: 0,
+            userspace_output_failures: 0,
+            process_table_size: 0,
+            pending_exec_source_size: 0,
+            process_records_evicted: 0,
+            pending_sources_evicted: 0,
+            uptime_secs: 0,
+            rss_kb: None,
+        };
+
+        let value: serde_json::Value = serde_json::from_str(&format_health_json(&record))
+            .expect("health record with null rss should be valid JSON");
+
+        assert!(value["rss_kb"].is_null());
+    }
+
+    #[test]
+    fn writes_health_record_line_to_writer() {
+        let record = HealthRecord {
+            raw_events_read: 0,
+            normalized_events_output: 0,
+            alerts_output: 0,
+            userspace_filtered: 0,
+            userspace_rate_limited: 0,
+            userspace_invalid_schema: 0,
+            userspace_unsupported_kind: 0,
+            userspace_output_failures: 0,
+            process_table_size: 0,
+            pending_exec_source_size: 0,
+            process_records_evicted: 0,
+            pending_sources_evicted: 0,
+            uptime_secs: 0,
+            rss_kb: None,
+        };
+        let mut output = JsonOutput::new(Vec::new());
+
+        output
+            .write_health(&record)
+            .expect("health write should succeed");
+
+        let line = String::from_utf8(output.into_inner()).expect("JSON output should be UTF-8");
+        assert!(line.ends_with('\n'));
+
+        let value: serde_json::Value = serde_json::from_str(line.trim_end())
+            .expect("written health record should be valid JSON");
+        assert_eq!(value["event_type"], "health");
     }
 
     fn sample_process_start() -> ProcessStart {

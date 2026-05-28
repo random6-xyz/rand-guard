@@ -12,7 +12,8 @@ use edr_common::{
 
 use crate::EVENTS;
 
-#[tracepoint]
+#[tracepoint(name = "sys_enter_rename", category = "syscalls")]
+#[inline(never)]
 pub fn sys_enter_rename(ctx: TracePointContext) -> u32 {
     try_sys_enter_rename(ctx).unwrap_or(1)
 }
@@ -21,7 +22,8 @@ fn try_sys_enter_rename(ctx: TracePointContext) -> Result<u32, i64> {
     try_sys_enter_rename_family(ctx, 16, 24)
 }
 
-#[tracepoint]
+#[tracepoint(name = "sys_enter_renameat", category = "syscalls")]
+#[inline(never)]
 pub fn sys_enter_renameat(ctx: TracePointContext) -> u32 {
     try_sys_enter_renameat(ctx).unwrap_or(1)
 }
@@ -30,7 +32,8 @@ fn try_sys_enter_renameat(ctx: TracePointContext) -> Result<u32, i64> {
     try_sys_enter_renameat_family(ctx, 24, 40)
 }
 
-#[tracepoint]
+#[tracepoint(name = "sys_enter_renameat2", category = "syscalls")]
+#[inline(never)]
 pub fn sys_enter_renameat2(ctx: TracePointContext) -> u32 {
     try_sys_enter_renameat2(ctx).unwrap_or(1)
 }

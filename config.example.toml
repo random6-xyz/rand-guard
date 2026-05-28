@@ -87,3 +87,5 @@ format = "json"
 [performance]
 max_events_per_second = 5000
 drop_when_full = true
+max_process_cache_entries = 5000
+max_pending_exec_sources = 500

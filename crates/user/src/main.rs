@@ -7,17 +7,25 @@ mod normalize;
 mod output;
 mod privilege;
 mod process_table;
+mod rate_limiter;
 mod rules;
 
 use anyhow::Context;
 use aya::maps::ring_buf::RingBuf;
 use tokio::io::unix::AsyncFd;
 use tokio::signal;
-use tokio::time::{Duration, sleep};
+use tokio::time::{Duration, Instant, sleep};
 use tracing::{info, warn};
 
-use crate::dispatch::DispatchContext;
+use crate::dispatch::{DispatchContext, DispatchResult};
+use crate::output::{HealthRecord, read_rss_kb};
 use crate::process_table::ProcessTable;
+use crate::rate_limiter::RateLimiter;
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct FilterPod(edr_common::FileFilterConfig);
+unsafe impl aya::Pod for FilterPod {}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -187,15 +195,56 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    if let Some(filter_map) = ebpf.map_mut("FILE_FILTER") {
+        let mut filter = edr_common::FileFilterConfig::empty();
+        let watch_paths = &config.file.watch_paths;
+        if !config.file.watch_patterns.is_empty() {
+            warn!("kernel file prefix filter disabled because watch_patterns are configured");
+        } else if watch_paths.len() > edr_common::FILE_FILTER_MAX_PREFIXES {
+            warn!(
+                configured = watch_paths.len(),
+                max = edr_common::FILE_FILTER_MAX_PREFIXES,
+                "kernel file prefix filter disabled because too many watch_paths are configured"
+            );
+        } else {
+            for (i, path) in watch_paths.iter().enumerate() {
+                let bytes = path.as_bytes();
+                let len = bytes.len().min(edr_common::FILE_FILTER_PREFIX_LEN);
+                filter.prefixes[i][..len].copy_from_slice(&bytes[..len]);
+                filter.prefix_lens[i] = len as u32;
+                filter.prefix_count += 1;
+            }
+        }
+        let mut array = aya::maps::Array::<_, FilterPod>::try_from(filter_map)?;
+        array.set(0, FilterPod(filter), 0)?;
+    }
+
     let ring_buf = RingBuf::try_from(ebpf.map_mut("EVENTS").context("EVENTS map not found")?)?;
     let mut async_ring = AsyncFd::new(ring_buf)?;
     let mut output = output::JsonOutput::stdout();
-    let mut table = ProcessTable::new();
+    let mut table = ProcessTable::with_limits(
+        config.performance.max_process_cache_entries,
+        config.performance.max_pending_exec_sources,
+    );
     let rule_engine = rules::RuleEngine::new(&config.rules);
+    let mut rate_limiter = RateLimiter::new(config.performance.max_events_per_second);
 
     let mut ci_smoke_start_seen = false;
     let mut ci_smoke_rel_or_exit_seen = false;
     let mut ci_smoke_file_open_seen = false;
+
+    let start_time = Instant::now();
+    let mut raw_events_read: u64 = 0;
+    let mut normalized_events_output: u64 = 0;
+    let mut alerts_output: u64 = 0;
+    let mut userspace_filtered: u64 = 0;
+    let mut userspace_rate_limited: u64 = 0;
+    let mut userspace_invalid_schema: u64 = 0;
+    let mut userspace_unsupported_kind: u64 = 0;
+    let mut userspace_output_failures: u64 = 0;
+
+    let health_interval = Duration::from_secs(10);
+    let mut next_health = start_time + health_interval;
 
     info!(
         agent = %config.agent.id,
@@ -206,12 +255,19 @@ async fn main() -> anyhow::Result<()> {
     );
 
     loop {
+        if ci_smoke && start_time.elapsed() >= Duration::from_secs(10) {
+            anyhow::bail!(
+                "CI smoke timeout: required process and file events were not observed within 10 seconds."
+            );
+        }
+
         tokio::select! {
             ready = async_ring.readable_mut() => {
                 let mut guard = ready?;
                 let ring_buf = guard.get_inner_mut();
                 while let Some(item) = ring_buf.next() {
                     let bytes: &[u8] = &item;
+                    raw_events_read += 1;
 
                     let mut dispatch_ctx = DispatchContext {
                         table: &mut table,
@@ -224,16 +280,42 @@ async fn main() -> anyhow::Result<()> {
                         ci_smoke_file_open_seen: &mut ci_smoke_file_open_seen,
                     };
 
-                    let normalized = dispatch::dispatch_event(bytes, &mut dispatch_ctx);
+                    let result = dispatch::dispatch_event(bytes, &mut dispatch_ctx);
 
-                    if let Some(event) = normalized {
-                        output.write_normalized(&event)?;
-                        for alert in rule_engine.evaluate(&event) {
-                            output.write_alert(&alert)?;
+                    match result {
+                        DispatchResult::Normalized(event) => {
+                            if !rate_limiter.allow(&event) {
+                                userspace_rate_limited += 1;
+                                continue;
+                            }
+                            if let Err(e) = output.write_normalized(&event) {
+                                userspace_output_failures += 1;
+                                warn!(error = %e, "failed to write normalized event");
+                                continue;
+                            }
+                            normalized_events_output += 1;
+                            for alert in rule_engine.evaluate(&event) {
+                                if let Err(e) = output.write_alert(&alert) {
+                                    userspace_output_failures += 1;
+                                    warn!(error = %e, "failed to write alert");
+                                } else {
+                                    alerts_output += 1;
+                                }
+                            }
+                            if ci_smoke_start_seen && ci_smoke_rel_or_exit_seen && ci_smoke_file_open_seen {
+                                return Ok(());
+                            }
                         }
-                        if ci_smoke_start_seen && ci_smoke_rel_or_exit_seen && ci_smoke_file_open_seen {
-                            return Ok(());
+                        DispatchResult::Filtered => {
+                            userspace_filtered += 1;
                         }
+                        DispatchResult::InvalidSchema => {
+                            userspace_invalid_schema += 1;
+                        }
+                        DispatchResult::Unsupported => {
+                            userspace_unsupported_kind += 1;
+                        }
+                        DispatchResult::Internal => {}
                     }
                 }
                 guard.clear_ready();
@@ -244,11 +326,53 @@ async fn main() -> anyhow::Result<()> {
                 }
                 anyhow::bail!("CI smoke timeout: no ringbuf event received within 10 seconds.");
             },
+            _ = sleep(next_health.saturating_duration_since(Instant::now())), if !ci_smoke => {
+                let record = HealthRecord {
+                    raw_events_read,
+                    normalized_events_output,
+                    alerts_output,
+                    userspace_filtered,
+                    userspace_rate_limited,
+                    userspace_invalid_schema,
+                    userspace_unsupported_kind,
+                    userspace_output_failures,
+                    process_table_size: table.record_count(),
+                    pending_exec_source_size: table.pending_exec_source_count(),
+                    process_records_evicted: table.records_evicted,
+                    pending_sources_evicted: table.pending_evicted,
+                    uptime_secs: start_time.elapsed().as_secs(),
+                    rss_kb: read_rss_kb(),
+                };
+                if let Err(e) = output.write_health(&record) {
+                    warn!(error = %e, "failed to write health record");
+                }
+                next_health = Instant::now() + health_interval;
+            },
             _ = signal::ctrl_c() => {
                 info!("shutting down");
                 break;
             }
         }
+    }
+
+    let record = HealthRecord {
+        raw_events_read,
+        normalized_events_output,
+        alerts_output,
+        userspace_filtered,
+        userspace_rate_limited,
+        userspace_invalid_schema,
+        userspace_unsupported_kind,
+        userspace_output_failures,
+        process_table_size: table.record_count(),
+        pending_exec_source_size: table.pending_exec_source_count(),
+        process_records_evicted: table.records_evicted,
+        pending_sources_evicted: table.pending_evicted,
+        uptime_secs: start_time.elapsed().as_secs(),
+        rss_kb: read_rss_kb(),
+    };
+    if let Err(e) = output.write_health(&record) {
+        warn!(error = %e, "failed to write final health record");
     }
 
     Ok(())

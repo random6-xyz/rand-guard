@@ -24,16 +24,34 @@ pub struct ProcessRecord {
 }
 
 /// Simple userspace process table keyed by `(pid, tid)`.
+///
+/// When the number of records exceeds `max_records`, exited records are
+/// evicted first, followed by the oldest `last_seen` records.  Evicted
+/// processes will lose `ppid`, `comm`, and `exe_path` enrichment for
+/// subsequent file/network events.
 pub struct ProcessTable {
     records: HashMap<(u32, u32), ProcessRecord>,
     pending_exec_sources: HashMap<(u32, u32), String>,
+    max_records: usize,
+    max_pending: usize,
+    pub records_evicted: u64,
+    pub pending_evicted: u64,
 }
 
 impl ProcessTable {
+    #[allow(dead_code)]
     pub fn new() -> Self {
+        Self::with_limits(usize::MAX, usize::MAX)
+    }
+
+    pub fn with_limits(max_records: usize, max_pending: usize) -> Self {
         Self {
             records: HashMap::new(),
             pending_exec_sources: HashMap::new(),
+            max_records,
+            max_pending,
+            records_evicted: 0,
+            pending_evicted: 0,
         }
     }
 
@@ -87,6 +105,7 @@ impl ProcessTable {
         let result = record.clone();
         let _source = record.pending_source.take();
         self.records.insert(key, record);
+        self.evict_records_if_needed();
         result
     }
 
@@ -114,20 +133,25 @@ impl ProcessTable {
         };
 
         self.records.insert(key, record.clone());
+        self.evict_records_if_needed();
         record
     }
 
     /// Mark a process as exited from a `sched_process_exit` event.
     ///
-    /// Returns the record if it was known, or `None` for unknown processes.
+    /// The record is kept in the table with `exited = true` so that
+    /// eviction can preferentially remove exited records.  Returns the
+    /// record if it was known, or `None` for unknown processes.
     pub fn mark_exit(&mut self, event: &ProcessExitEvent) -> Option<ProcessRecord> {
         let key = (event.header.pid, event.header.tid);
         self.pending_exec_sources.remove(&key);
-        if let Some(mut record) = self.records.remove(&key) {
+        if let Some(record) = self.records.get_mut(&key) {
             record.last_seen = event.header.timestamp_ns;
             record.exit_timestamp = Some(event.header.timestamp_ns);
             record.exited = true;
-            Some(record)
+            let result = record.clone();
+            self.evict_records_if_needed();
+            Some(result)
         } else {
             None
         }
@@ -147,12 +171,55 @@ impl ProcessTable {
             record.pending_source = Some(source.to_string());
         } else {
             self.pending_exec_sources.insert(key, source.to_string());
+            self.evict_pending_if_needed();
         }
     }
 
     #[allow(dead_code)]
     pub fn get(&self, key: &(u32, u32)) -> Option<&ProcessRecord> {
         self.records.get(key)
+    }
+
+    pub fn record_count(&self) -> usize {
+        self.records.len()
+    }
+
+    pub fn pending_exec_source_count(&self) -> usize {
+        self.pending_exec_sources.len()
+    }
+
+    fn evict_records_if_needed(&mut self) {
+        while self.records.len() > self.max_records {
+            let evict_key = self
+                .records
+                .iter()
+                .filter(|(_, r)| r.exited)
+                .min_by_key(|(_, r)| r.last_seen)
+                .map(|(k, _)| *k)
+                .or_else(|| {
+                    self.records
+                        .iter()
+                        .min_by_key(|(_, r)| r.last_seen)
+                        .map(|(k, _)| *k)
+                });
+            if let Some(key) = evict_key {
+                self.records.remove(&key);
+                self.records_evicted += 1;
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn evict_pending_if_needed(&mut self) {
+        while self.pending_exec_sources.len() > self.max_pending {
+            if let Some(key) = self.pending_exec_sources.keys().next().copied() {
+                self.pending_exec_sources.remove(&key);
+                self.pending_evicted += 1;
+            } else {
+                break;
+            }
+        }
     }
 }
 
@@ -365,5 +432,60 @@ mod tests {
         assert!(record.exited);
         assert_eq!(record.exe_path, "/bin/sh");
         assert_eq!(record.ppid, 1);
+    }
+
+    #[test]
+    fn eviction_prefers_exited_records() {
+        let mut table = ProcessTable::with_limits(2, 100);
+        let exec1 = make_exec_event(1, 1, 0, "/bin/a", "a");
+        table.update_from_exec(&exec1);
+        let exec2 = make_exec_event(2, 2, 0, "/bin/b", "b");
+        table.update_from_exec(&exec2);
+
+        let exit = make_exit_event(1, 1, "a");
+        table.mark_exit(&exit);
+
+        let exec3 = make_exec_event(3, 3, 0, "/bin/c", "c");
+        table.update_from_exec(&exec3);
+
+        assert_eq!(table.record_count(), 2);
+        assert!(table.get(&(1, 1)).is_none());
+        assert!(table.get(&(2, 2)).is_some());
+        assert!(table.get(&(3, 3)).is_some());
+        assert_eq!(table.records_evicted, 1);
+    }
+
+    #[test]
+    fn eviction_removes_oldest_when_no_exited() {
+        let mut table = ProcessTable::with_limits(2, 100);
+        let mut exec1 = make_exec_event(1, 1, 0, "/bin/a", "a");
+        exec1.header.timestamp_ns = 100;
+        table.update_from_exec(&exec1);
+        let mut exec2 = make_exec_event(2, 2, 0, "/bin/b", "b");
+        exec2.header.timestamp_ns = 200;
+        table.update_from_exec(&exec2);
+
+        let mut exec3 = make_exec_event(3, 3, 0, "/bin/c", "c");
+        exec3.header.timestamp_ns = 300;
+        table.update_from_exec(&exec3);
+
+        assert_eq!(table.record_count(), 2);
+        assert!(table.get(&(1, 1)).is_none());
+        assert!(table.get(&(2, 2)).is_some());
+        assert!(table.get(&(3, 3)).is_some());
+    }
+
+    #[test]
+    fn pending_exec_sources_evicted_when_over_limit() {
+        let mut table = ProcessTable::with_limits(100, 2);
+        let s1 = make_exec_syscall_event(1, 1, ExecSource::Execve);
+        table.set_pending_source(&s1);
+        let s2 = make_exec_syscall_event(2, 2, ExecSource::Execve);
+        table.set_pending_source(&s2);
+        let s3 = make_exec_syscall_event(3, 3, ExecSource::Execve);
+        table.set_pending_source(&s3);
+
+        assert_eq!(table.pending_exec_source_count(), 2);
+        assert_eq!(table.pending_evicted, 1);
     }
 }

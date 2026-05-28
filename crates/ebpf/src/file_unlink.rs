@@ -12,7 +12,8 @@ use edr_common::{
 
 use crate::EVENTS;
 
-#[tracepoint]
+#[tracepoint(name = "sys_enter_unlink", category = "syscalls")]
+#[inline(never)]
 pub fn sys_enter_unlink(ctx: TracePointContext) -> u32 {
     try_sys_enter_unlink(ctx).unwrap_or(1)
 }
@@ -21,7 +22,8 @@ fn try_sys_enter_unlink(ctx: TracePointContext) -> Result<u32, i64> {
     try_sys_enter_unlink_family(ctx, 16)
 }
 
-#[tracepoint]
+#[tracepoint(name = "sys_enter_unlinkat", category = "syscalls")]
+#[inline(never)]
 pub fn sys_enter_unlinkat(ctx: TracePointContext) -> u32 {
     try_sys_enter_unlinkat(ctx).unwrap_or(1)
 }

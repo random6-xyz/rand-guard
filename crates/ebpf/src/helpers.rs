@@ -1,5 +1,8 @@
 use aya_ebpf::{helpers::r#gen, programs::TracePointContext};
-use edr_common::{EVENT_SCHEMA_VERSION, EventHeader, EventKind};
+use edr_common::{
+    EVENT_SCHEMA_VERSION, EventHeader, EventKind, FILE_FILTER_MAX_PREFIXES, FILE_FILTER_PREFIX_LEN,
+    FileFilterConfig,
+};
 
 pub fn fill_header(
     header: &mut EventHeader,
@@ -52,4 +55,37 @@ pub unsafe fn read_data_loc_comm(
     }
 
     Ok(())
+}
+
+#[allow(clippy::needless_range_loop)]
+pub fn file_passes_filter(filter: &FileFilterConfig, filename: &[u8], filename_len: u16) -> bool {
+    if filter.prefix_count == 0 {
+        return true;
+    }
+
+    let mut matched = false;
+    for i in 0..FILE_FILTER_MAX_PREFIXES {
+        if i as u32 >= filter.prefix_count {
+            break;
+        }
+        let prefix_len = filter.prefix_lens[i] as usize;
+        if prefix_len == 0
+            || prefix_len > FILE_FILTER_PREFIX_LEN
+            || (filename_len as usize) < prefix_len
+        {
+            continue;
+        }
+        let mut prefix_matches = true;
+        for j in 0..prefix_len {
+            if filename[j] != filter.prefixes[i][j] {
+                prefix_matches = false;
+                break;
+            }
+        }
+        if prefix_matches {
+            matched = true;
+            break;
+        }
+    }
+    matched
 }

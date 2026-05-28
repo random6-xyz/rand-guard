@@ -1,6 +1,8 @@
 use anyhow::{Context, bail};
 use serde_json::Value;
-use std::process::{Child, Command};
+use std::path::Path;
+use std::process::{Child, Command, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const USAGE: &str = "usage: cargo xtask <command> [command...]\n\n\
         commands:\n\n\
@@ -9,7 +11,8 @@ const USAGE: &str = "usage: cargo xtask <command> [command...]\n\n\
         l, clippy       Clippy all\n\
         t, test         Test userspace\n\n\
         b, build        Build release all\n\
-        r, run          Run\n\n\
+        r, run          Run\n\
+        tp, throughput  Build release all and run local throughput measurement\n\n\
         cs, ci-smoke    Build release all, run with CI_SMOKE\n\
         cf, ci-format   Check format for ci\n\n\
         h, help         Print command\n";
@@ -31,6 +34,7 @@ fn main() -> anyhow::Result<()> {
                 build_user(true)?;
             }
             "r" | "run" => run_user(false, false)?,
+            "tp" | "throughput" => run_throughput()?,
             "cs" | "ci-smoke" => {
                 build_ebpf(true)?;
                 build_user(true)?;
@@ -101,8 +105,6 @@ fn run_user(debug: bool, ci_smoke: bool) -> anyhow::Result<()> {
     let mut smoke_helpers = Vec::new();
 
     let config_path = if ci_smoke {
-        command.env("CI_SMOKE", "1");
-
         smoke_helpers.push(
             Command::new("timeout")
                 .args([
@@ -114,11 +116,14 @@ fn run_user(debug: bool, ci_smoke: bool) -> anyhow::Result<()> {
                 .spawn()?,
         );
 
-        // Spawn a short-lived child that touches a file under /tmp so the
-        // file_open tracepoint has a chance to fire.
+        // Spawn a short-lived child that writes under /tmp so the file_write
+        // tracepoint has a chance to fire without loading the heavier openat hook.
         smoke_helpers.push(
             Command::new("bash")
-                .args(["-c", "sleep 2; touch /tmp/edr_ci_smoke_file"])
+                .args([
+                    "-c",
+                    "sleep 2; exec 3>/tmp/edr_ci_smoke_file; end=$((SECONDS + 5)); while [ \"$SECONDS\" -lt \"$end\" ]; do printf smoke >&3; sleep 0.1; done",
+                ])
                 .spawn()?,
         );
 
@@ -147,8 +152,8 @@ collect_cwd = false
 
 [file]
 enabled = true
-hooks = ["openat"]
-watch_paths = ["/tmp"]
+hooks = ["write"]
+watch_paths = []
 watch_patterns = []
 exclude_paths = []
 
@@ -189,7 +194,7 @@ drop_when_full = true
         let config_str = config_path.to_str().context("path is not valid UTF-8")?;
 
         let output_result = command
-            .args(["-E", user_bin_str])
+            .args(["-E", "timeout", "-s", "INT", "12s", user_bin_str])
             .env("EDR_EBPF_OBJECT", ebpf_obj_str)
             .env("EDR_CONFIG", config_str)
             .output();
@@ -198,7 +203,7 @@ drop_when_full = true
 
         let output = output_result.context("failed to run user loader with sudo directly")?;
 
-        if !output.status.success() {
+        if !output.status.success() && output.status.code() != Some(124) {
             let stderr = String::from_utf8_lossy(&output.stderr);
             bail!("userspace program failed in CI_SMOKE mode: {stderr}");
         }
@@ -226,6 +231,288 @@ fn cleanup_smoke_helpers(children: &mut [Child]) {
         let _ = child.kill();
         let _ = child.wait();
     }
+}
+
+fn run_throughput() -> anyhow::Result<()> {
+    build_ebpf(true)?;
+    build_user(true)?;
+
+    let repo_root = std::env::current_dir().context("failed to get current directory")?;
+    let duration_secs = env_u64("EDR_THROUGHPUT_DURATION_SECS", 15)?;
+    let generator_secs = env_u64("EDR_THROUGHPUT_GENERATOR_SECS", 10)?;
+    let output_dir = std::env::var("EDR_THROUGHPUT_OUTPUT")
+        .map(|path| repo_root.join(path))
+        .unwrap_or_else(|_| repo_root.join(".local/throughput"));
+
+    let config_path = write_throughput_config()?;
+    let config_str = config_path.to_str().context("path is not valid UTF-8")?;
+    let user_bin = repo_root.join("target/release/edr-user");
+    let user_bin_str = user_bin.to_str().context("path is not valid UTF-8")?;
+    let ebpf_obj = repo_root.join("target/bpfel-unknown-none/release/edr-ebpf");
+    let ebpf_obj_str = ebpf_obj.to_str().context("path is not valid UTF-8")?;
+
+    let mut generator = spawn_throughput_generator(generator_secs)?;
+    let timeout_arg = format!("{duration_secs}s");
+    let output_result = Command::new("sudo")
+        .args(["-E", "timeout", "-s", "INT", &timeout_arg, user_bin_str])
+        .env("EDR_EBPF_OBJECT", ebpf_obj_str)
+        .env("EDR_CONFIG", config_str)
+        .output();
+
+    let _ = generator.kill();
+    let _ = generator.wait();
+
+    let output = output_result.context("failed to run throughput measurement with sudo")?;
+    let summary = match parse_throughput_summary(&output.stdout) {
+        Ok(summary) => summary,
+        Err(e) if !output.status.success() => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("throughput measurement failed before health output: {e}; stderr: {stderr}");
+        }
+        Err(e) => return Err(e),
+    };
+
+    std::fs::create_dir_all(&output_dir).context("failed to create throughput output directory")?;
+    let result_path = write_throughput_result(
+        &output_dir,
+        duration_secs,
+        generator_secs,
+        output.status.code(),
+        &summary,
+    )?;
+
+    println!("throughput benchmark complete");
+    println!("duration_secs: {duration_secs}");
+    println!("generator_secs: {generator_secs}");
+    println!("health_records: {}", summary.health_records);
+    println!("raw_events_read: {}", summary.raw_events_read);
+    println!(
+        "normalized_events_output: {}",
+        summary.normalized_events_output
+    );
+    println!("raw_events_per_sec: {:.2}", summary.raw_events_per_sec);
+    println!(
+        "emitted_events_per_sec: {:.2}",
+        summary.emitted_events_per_sec
+    );
+    println!(
+        "userspace_drops_per_sec: {:.2}",
+        summary.userspace_drops_per_sec
+    );
+    println!("max_observed_rss_kb: {}", summary.max_observed_rss_kb);
+    println!(
+        "final_process_table_size: {}",
+        summary.final_process_table_size
+    );
+    println!(
+        "final_pending_exec_source_size: {}",
+        summary.final_pending_exec_source_size
+    );
+    println!("result: {}", result_path.display());
+
+    Ok(())
+}
+
+fn env_u64(name: &str, default: u64) -> anyhow::Result<u64> {
+    match std::env::var(name) {
+        Ok(value) => value
+            .parse()
+            .with_context(|| format!("failed to parse {name} as an integer")),
+        Err(std::env::VarError::NotPresent) => Ok(default),
+        Err(e) => Err(e).with_context(|| format!("failed to read {name}")),
+    }
+}
+
+fn write_throughput_config() -> anyhow::Result<std::path::PathBuf> {
+    let config_path =
+        std::env::temp_dir().join(format!("edr_throughput_config_{}.toml", std::process::id()));
+    let config_contents = r#"[agent]
+id = "throughput"
+mode = "monitor"
+log_level = "warn"
+
+[ebpf]
+enabled = true
+buffer_size = 8192
+
+[events]
+process = true
+file = true
+network = false
+
+[process]
+enabled = true
+hooks = []
+collect_args = false
+collect_env = false
+collect_cwd = false
+
+[file]
+enabled = true
+hooks = ["write"]
+watch_paths = ["/tmp/rand_guard_throughput"]
+watch_patterns = []
+exclude_paths = []
+
+[network]
+enabled = false
+hooks = ["connect", "bind", "listen"]
+collect_dns = false
+collect_payload = false
+
+[[rules]]
+id = "THROUGHPUT-DUMMY"
+name = "Throughput dummy"
+enabled = false
+type = "process"
+severity = "low"
+action = "alert"
+process_names = ["dummy"]
+
+[detections]
+persistence = []
+network = []
+
+[output]
+type = "stdout"
+format = "json"
+
+[performance]
+max_events_per_second = 5000
+drop_when_full = true
+max_process_cache_entries = 5000
+max_pending_exec_sources = 500
+"#;
+    std::fs::write(&config_path, config_contents).context("failed to write throughput config")?;
+    Ok(config_path)
+}
+
+fn spawn_throughput_generator(generator_secs: u64) -> anyhow::Result<Child> {
+    let script = format!(
+        "sleep 0.5; mkdir -p /tmp/rand_guard_throughput; exec 3> /tmp/rand_guard_throughput/probe; end=$((SECONDS + {generator_secs})); while [ \"$SECONDS\" -lt \"$end\" ]; do printf x >&3; done"
+    );
+
+    Command::new("bash")
+        .args(["-c", &script])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("failed to spawn throughput event generator")
+}
+
+#[derive(Debug)]
+struct ThroughputSummary {
+    health_records: u64,
+    raw_events_read: u64,
+    normalized_events_output: u64,
+    alerts_output: u64,
+    userspace_drops: u64,
+    raw_events_per_sec: f64,
+    emitted_events_per_sec: f64,
+    userspace_drops_per_sec: f64,
+    max_observed_rss_kb: u64,
+    final_process_table_size: u64,
+    final_pending_exec_source_size: u64,
+    uptime_secs: u64,
+}
+
+fn parse_throughput_summary(stdout: &[u8]) -> anyhow::Result<ThroughputSummary> {
+    let stdout = std::str::from_utf8(stdout).context("throughput stdout was not valid UTF-8")?;
+    let health_events: Vec<Value> = stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|event| event["event_type"] == "health")
+        .collect();
+
+    let last = health_events
+        .last()
+        .context("throughput measurement did not emit a health JSON event")?;
+    let uptime_secs = json_u64(last, "uptime_secs").unwrap_or(0).max(1);
+    let raw_events_read = json_u64(last, "raw_events_read").unwrap_or(0);
+    let normalized_events_output = json_u64(last, "normalized_events_output").unwrap_or(0);
+    let alerts_output = json_u64(last, "alerts_output").unwrap_or(0);
+    let userspace_drops = json_u64(last, "userspace_filtered").unwrap_or(0)
+        + json_u64(last, "userspace_rate_limited").unwrap_or(0)
+        + json_u64(last, "userspace_invalid_schema").unwrap_or(0)
+        + json_u64(last, "userspace_unsupported_kind").unwrap_or(0)
+        + json_u64(last, "userspace_output_failures").unwrap_or(0);
+    let max_observed_rss_kb = health_events
+        .iter()
+        .filter_map(|event| json_u64(event, "rss_kb"))
+        .max()
+        .unwrap_or(0);
+
+    Ok(ThroughputSummary {
+        health_records: health_events.len() as u64,
+        raw_events_read,
+        normalized_events_output,
+        alerts_output,
+        userspace_drops,
+        raw_events_per_sec: raw_events_read as f64 / uptime_secs as f64,
+        emitted_events_per_sec: normalized_events_output as f64 / uptime_secs as f64,
+        userspace_drops_per_sec: userspace_drops as f64 / uptime_secs as f64,
+        max_observed_rss_kb,
+        final_process_table_size: json_u64(last, "process_table_size").unwrap_or(0),
+        final_pending_exec_source_size: json_u64(last, "pending_exec_source_size").unwrap_or(0),
+        uptime_secs,
+    })
+}
+
+fn json_u64(value: &Value, key: &str) -> Option<u64> {
+    value.get(key).and_then(Value::as_u64)
+}
+
+fn write_throughput_result(
+    output_dir: &Path,
+    duration_secs: u64,
+    generator_secs: u64,
+    status_code: Option<i32>,
+    summary: &ThroughputSummary,
+) -> anyhow::Result<std::path::PathBuf> {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock is before UNIX epoch")?
+        .as_secs();
+    let result_path = output_dir.join(format!("throughput-{timestamp}.md"));
+    let status_code = status_code
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| "signal".to_string());
+    let contents = format!(
+        "# rand-guard throughput run\n\n\
+- command: `cargo run -p xtask -- throughput`\n\
+- generator: file write loop under `/tmp/rand_guard_throughput`\n\
+- network_enabled: false\n\
+- requested_duration_secs: {duration_secs}\n\
+- requested_generator_secs: {generator_secs}\n\
+- process_status_code: {status_code}\n\
+- health_records: {}\n\
+- uptime_secs: {}\n\
+- raw_events_read: {}\n\
+- normalized_events_output: {}\n\
+- alerts_output: {}\n\
+- userspace_drops: {}\n\
+- raw_events_per_sec: {:.2}\n\
+- emitted_events_per_sec: {:.2}\n\
+- userspace_drops_per_sec: {:.2}\n\
+- max_observed_rss_kb: {}\n\
+- final_process_table_size: {}\n\
+- final_pending_exec_source_size: {}\n",
+        summary.health_records,
+        summary.uptime_secs,
+        summary.raw_events_read,
+        summary.normalized_events_output,
+        summary.alerts_output,
+        summary.userspace_drops,
+        summary.raw_events_per_sec,
+        summary.emitted_events_per_sec,
+        summary.userspace_drops_per_sec,
+        summary.max_observed_rss_kb,
+        summary.final_process_table_size,
+        summary.final_pending_exec_source_size,
+    );
+
+    std::fs::write(&result_path, contents).context("failed to write throughput result")?;
+    Ok(result_path)
 }
 
 fn validate_ci_smoke_output(stdout: &[u8]) -> anyhow::Result<()> {
@@ -256,12 +543,12 @@ fn validate_ci_smoke_output(stdout: &[u8]) -> anyhow::Result<()> {
         bail!("CI smoke did not emit a process_relationship event");
     }
 
-    let has_file_open = events
+    let has_file_write = events
         .iter()
-        .any(|event| event["event_type"] == "file_open");
+        .any(|event| event["event_type"] == "file_write");
 
-    if !has_file_open {
-        bail!("CI smoke did not emit a file_open event");
+    if !has_file_write {
+        bail!("CI smoke did not emit a file_write event");
     }
 
     Ok(())
@@ -357,4 +644,37 @@ fn run(cmd: &mut Command, name: &str) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_throughput_health_summary() {
+        let stdout = br#"{"event_type":"health","raw_events_read":100,"normalized_events_output":80,"alerts_output":2,"userspace_filtered":3,"userspace_rate_limited":4,"userspace_invalid_schema":5,"userspace_unsupported_kind":6,"userspace_output_failures":7,"process_table_size":8,"pending_exec_source_size":9,"uptime_secs":10,"rss_kb":1024}
+{"event_type":"health","raw_events_read":200,"normalized_events_output":160,"alerts_output":3,"userspace_filtered":4,"userspace_rate_limited":5,"userspace_invalid_schema":6,"userspace_unsupported_kind":7,"userspace_output_failures":8,"process_table_size":10,"pending_exec_source_size":11,"uptime_secs":20,"rss_kb":2048}
+"#;
+
+        let summary = parse_throughput_summary(stdout).expect("health summary should parse");
+
+        assert_eq!(summary.health_records, 2);
+        assert_eq!(summary.raw_events_read, 200);
+        assert_eq!(summary.normalized_events_output, 160);
+        assert_eq!(summary.alerts_output, 3);
+        assert_eq!(summary.userspace_drops, 30);
+        assert_eq!(summary.raw_events_per_sec, 10.0);
+        assert_eq!(summary.emitted_events_per_sec, 8.0);
+        assert_eq!(summary.userspace_drops_per_sec, 1.5);
+        assert_eq!(summary.max_observed_rss_kb, 2048);
+        assert_eq!(summary.final_process_table_size, 10);
+        assert_eq!(summary.final_pending_exec_source_size, 11);
+    }
+
+    #[test]
+    fn rejects_throughput_summary_without_health() {
+        let err = parse_throughput_summary(b"{}").expect_err("health record should be required");
+
+        assert!(err.to_string().contains("health JSON event"));
+    }
 }

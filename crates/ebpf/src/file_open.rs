@@ -12,13 +12,11 @@ use edr_common::{
 };
 
 use crate::EVENTS;
+use crate::FILE_FILTER;
+use crate::helpers::file_passes_filter;
 
-#[tracepoint]
+#[tracepoint(name = "sys_enter_openat", category = "syscalls")]
 pub fn sys_enter_openat(ctx: TracePointContext) -> u32 {
-    try_sys_enter_openat(ctx).unwrap_or(1)
-}
-
-fn try_sys_enter_openat(ctx: TracePointContext) -> Result<u32, i64> {
     let pid_tgid = bpf_get_current_pid_tgid();
     let uid_gid = bpf_get_current_uid_gid();
 
@@ -27,10 +25,15 @@ fn try_sys_enter_openat(ctx: TracePointContext) -> Result<u32, i64> {
     let gid = (uid_gid >> 32) as u32;
     let uid = uid_gid as u32;
 
-    let filename_user_ptr = unsafe { ctx.read_at::<u64>(24)? } as *const u8;
-    let flags = unsafe { ctx.read_at::<i32>(32)? } as u32;
+    let filename_arg = unsafe { ctx.read_at::<u64>(24) };
+    let flags_arg = unsafe { ctx.read_at::<i32>(32) };
+    let args_ok = filename_arg.is_ok() && flags_arg.is_ok();
+    let filename_user_ptr = filename_arg.unwrap_or(0) as *const u8;
+    let flags = flags_arg.unwrap_or(0) as u32;
 
     if let Some(mut entry) = EVENTS.reserve::<FileOpenEvent>(0) {
+        let mut should_submit = args_ok;
+
         unsafe {
             let ptr = entry.as_mut_ptr();
 
@@ -64,20 +67,36 @@ fn try_sys_enter_openat(ctx: TracePointContext) -> Result<u32, i64> {
                         }
                     }
                     Err(ret) => {
-                        entry.discard(0);
-                        return Err(ret);
+                        let _ = ret;
+                        should_submit = false;
                     }
                 }
             }
+
+            match FILE_FILTER.get(0) {
+                Some(filter) if should_submit => {
+                    let fname = &(*ptr).filename;
+                    let fname_len = (*ptr).filename_len;
+                    if !file_passes_filter(filter, fname, fname_len) {
+                        should_submit = false;
+                    }
+                }
+                _ => {}
+            }
         }
 
-        entry.submit(0);
+        if should_submit {
+            entry.submit(0);
+        } else {
+            entry.discard(0);
+        }
     }
 
-    Ok(0)
+    0
 }
 
-#[tracepoint]
+#[tracepoint(name = "sys_enter_openat2", category = "syscalls")]
+#[inline(never)]
 pub fn sys_enter_openat2(ctx: TracePointContext) -> u32 {
     try_sys_enter_openat2(ctx).unwrap_or(1)
 }
@@ -137,6 +156,15 @@ fn try_sys_enter_openat2(ctx: TracePointContext) -> Result<u32, i64> {
                         entry.discard(0);
                         return Err(ret);
                     }
+                }
+            }
+
+            if let Some(filter) = FILE_FILTER.get(0) {
+                let fname = &(*ptr).filename;
+                let fname_len = (*ptr).filename_len;
+                if !file_passes_filter(filter, fname, fname_len) {
+                    entry.discard(0);
+                    return Ok(0);
                 }
             }
         }

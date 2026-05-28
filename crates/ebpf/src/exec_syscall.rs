@@ -12,7 +12,8 @@ use edr_common::{
 
 use crate::EVENTS;
 
-#[tracepoint]
+#[tracepoint(name = "sys_enter_execve", category = "syscalls")]
+#[inline(never)]
 pub fn sys_enter_execve(ctx: TracePointContext) -> u32 {
     try_sys_enter_execve(ctx).unwrap_or(1)
 }
@@ -21,7 +22,8 @@ fn try_sys_enter_execve(ctx: TracePointContext) -> Result<u32, i64> {
     try_sys_enter_exec(ctx, 16, ExecSource::Execve)
 }
 
-#[tracepoint]
+#[tracepoint(name = "sys_enter_execveat", category = "syscalls")]
+#[inline(never)]
 pub fn sys_enter_execveat(ctx: TracePointContext) -> u32 {
     try_sys_enter_execveat(ctx).unwrap_or(1)
 }
