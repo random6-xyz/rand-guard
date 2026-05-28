@@ -36,7 +36,7 @@ async fn main() -> anyhow::Result<()> {
     privilege::ensure_sufficient()?;
 
     let ebpf_path = std::env::var("EDR_EBPF_OBJECT")
-        .unwrap_or_else(|_| "crates/ebpf/target/bpfel-unknown-none/debug/edr-ebpf".to_string());
+        .unwrap_or_else(|_| "target/bpfel-unknown-none/release/edr-ebpf".to_string());
     let ci_smoke = std::env::var("CI_SMOKE").as_deref() == Ok("1");
 
     let data = std::fs::read(&ebpf_path)?;
