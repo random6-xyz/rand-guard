@@ -249,6 +249,12 @@ async fn main() -> anyhow::Result<()> {
     );
 
     loop {
+        if ci_smoke && start_time.elapsed() >= Duration::from_secs(10) {
+            anyhow::bail!(
+                "CI smoke timeout: required process and file events were not observed within 10 seconds."
+            );
+        }
+
         tokio::select! {
             ready = async_ring.readable_mut() => {
                 let mut guard = ready?;

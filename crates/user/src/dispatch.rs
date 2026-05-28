@@ -302,7 +302,9 @@ pub fn dispatch_event(bytes: &[u8], ctx: &mut DispatchContext<'_>) -> DispatchRe
                     NormalizedEvent::ProcessRelationship(_) | NormalizedEvent::ProcessExit(_) => {
                         *ctx.ci_smoke_rel_or_exit_seen = true
                     }
-                    NormalizedEvent::FileOpen(_) => *ctx.ci_smoke_file_open_seen = true,
+                    NormalizedEvent::FileOpen(_)
+                    | NormalizedEvent::FileWrite(_)
+                    | NormalizedEvent::FileWriteV(_) => *ctx.ci_smoke_file_open_seen = true,
                     _ => {}
                 }
             }

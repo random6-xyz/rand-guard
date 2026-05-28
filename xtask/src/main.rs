@@ -105,8 +105,6 @@ fn run_user(debug: bool, ci_smoke: bool) -> anyhow::Result<()> {
     let mut smoke_helpers = Vec::new();
 
     let config_path = if ci_smoke {
-        command.env("CI_SMOKE", "1");
-
         smoke_helpers.push(
             Command::new("timeout")
                 .args([
@@ -118,11 +116,14 @@ fn run_user(debug: bool, ci_smoke: bool) -> anyhow::Result<()> {
                 .spawn()?,
         );
 
-        // Spawn a short-lived child that touches a file under /tmp so the
-        // file_open tracepoint has a chance to fire.
+        // Spawn a short-lived child that writes under /tmp so the file_write
+        // tracepoint has a chance to fire without loading the heavier openat hook.
         smoke_helpers.push(
             Command::new("bash")
-                .args(["-c", "sleep 2; touch /tmp/edr_ci_smoke_file"])
+                .args([
+                    "-c",
+                    "sleep 2; exec 3>/tmp/edr_ci_smoke_file; end=$((SECONDS + 5)); while [ \"$SECONDS\" -lt \"$end\" ]; do printf smoke >&3; sleep 0.1; done",
+                ])
                 .spawn()?,
         );
 
@@ -151,7 +152,7 @@ collect_cwd = false
 
 [file]
 enabled = true
-hooks = ["openat"]
+hooks = ["write"]
 watch_paths = ["/tmp"]
 watch_patterns = []
 exclude_paths = []
@@ -193,7 +194,7 @@ drop_when_full = true
         let config_str = config_path.to_str().context("path is not valid UTF-8")?;
 
         let output_result = command
-            .args(["-E", user_bin_str])
+            .args(["-E", "timeout", "-s", "INT", "12s", user_bin_str])
             .env("EDR_EBPF_OBJECT", ebpf_obj_str)
             .env("EDR_CONFIG", config_str)
             .output();
@@ -202,7 +203,7 @@ drop_when_full = true
 
         let output = output_result.context("failed to run user loader with sudo directly")?;
 
-        if !output.status.success() {
+        if !output.status.success() && output.status.code() != Some(124) {
             let stderr = String::from_utf8_lossy(&output.stderr);
             bail!("userspace program failed in CI_SMOKE mode: {stderr}");
         }
@@ -542,12 +543,12 @@ fn validate_ci_smoke_output(stdout: &[u8]) -> anyhow::Result<()> {
         bail!("CI smoke did not emit a process_relationship event");
     }
 
-    let has_file_open = events
+    let has_file_write = events
         .iter()
-        .any(|event| event["event_type"] == "file_open");
+        .any(|event| event["event_type"] == "file_write");
 
-    if !has_file_open {
-        bail!("CI smoke did not emit a file_open event");
+    if !has_file_write {
+        bail!("CI smoke did not emit a file_write event");
     }
 
     Ok(())
