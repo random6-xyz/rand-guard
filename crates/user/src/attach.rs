@@ -14,8 +14,12 @@ pub fn attach_tracepoint(
         .try_into()
         .with_context(|| format!("program '{}' is not a tracepoint", program_name))?;
 
-    program.load()?;
-    program.attach(category, event)?;
+    program
+        .load()
+        .with_context(|| format!("failed to load tracepoint program '{program_name}'"))?;
+    program.attach(category, event).with_context(|| {
+        format!("failed to attach tracepoint program '{program_name}' to {category}:{event}")
+    })?;
     info!(program = %program_name, category = %category, event = %event, "tracepoint attached");
     Ok(())
 }

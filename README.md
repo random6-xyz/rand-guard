@@ -130,6 +130,28 @@ cargo run -p xtask -- ci-smoke
 cargo run -p xtask -- run
 ```
 
+## Throughput Measurement
+
+Run the local throughput workflow from the repository root:
+
+```sh
+cargo run -p xtask -- throughput
+```
+
+The workflow builds release artifacts, starts `edr-user` with a temporary config, generates controlled file-write volume under `/tmp/rand_guard_throughput`, parses `event_type = "health"` records, and writes a Markdown summary under `.local/throughput/`.
+
+The default benchmark keeps process collection enabled but disables process hooks so the measurement focuses on file-write throughput. Network collection is also disabled. Override the run length with environment variables:
+
+```sh
+EDR_THROUGHPUT_DURATION_SECS=30 \
+EDR_THROUGHPUT_GENERATOR_SECS=25 \
+cargo run -p xtask -- throughput
+```
+
+The summary includes total raw events, normalized events/sec, userspace drops/sec, max observed RSS, and final process cache sizes. Treat these results as local comparison data, not CI pass/fail thresholds; values depend on kernel version, CPU, disk, scheduler load, and active background processes.
+
+This command loads eBPF and generally requires `sudo` or suitable capabilities. Generated result files are intentionally ignored by git through `.local/`.
+
 ## Configuration
 
 The example config keeps network collection disabled by default to keep local and CI behavior low-noise:

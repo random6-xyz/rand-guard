@@ -14,12 +14,14 @@ use edr_common::{
 use crate::EVENTS;
 use crate::helpers::fill_header;
 
-#[tracepoint]
+#[tracepoint(name = "sys_enter_connect", category = "syscalls")]
+#[inline(never)]
 pub fn sys_enter_connect(ctx: TracePointContext) -> u32 {
     try_sys_enter_network_sockaddr(ctx, EventKind::NetworkConnect).unwrap_or(1)
 }
 
-#[tracepoint]
+#[tracepoint(name = "sys_enter_bind", category = "syscalls")]
+#[inline(never)]
 pub fn sys_enter_bind(ctx: TracePointContext) -> u32 {
     try_sys_enter_network_sockaddr(ctx, EventKind::NetworkBind).unwrap_or(1)
 }
@@ -131,7 +133,8 @@ fn try_sys_enter_network_sockaddr(ctx: TracePointContext, kind: EventKind) -> Re
     Ok(0)
 }
 
-#[tracepoint]
+#[tracepoint(name = "sys_enter_listen", category = "syscalls")]
+#[inline(never)]
 pub fn sys_enter_listen(ctx: TracePointContext) -> u32 {
     try_sys_enter_listen(ctx).unwrap_or(1)
 }

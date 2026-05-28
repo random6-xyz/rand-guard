@@ -15,7 +15,8 @@ use crate::EVENTS;
 use crate::FILE_FILTER;
 use crate::helpers::file_passes_filter;
 
-#[tracepoint]
+#[tracepoint(name = "sys_enter_openat", category = "syscalls")]
+#[inline(never)]
 pub fn sys_enter_openat(ctx: TracePointContext) -> u32 {
     try_sys_enter_openat(ctx).unwrap_or(1)
 }
@@ -88,7 +89,8 @@ fn try_sys_enter_openat(ctx: TracePointContext) -> Result<u32, i64> {
     Ok(0)
 }
 
-#[tracepoint]
+#[tracepoint(name = "sys_enter_openat2", category = "syscalls")]
+#[inline(never)]
 pub fn sys_enter_openat2(ctx: TracePointContext) -> u32 {
     try_sys_enter_openat2(ctx).unwrap_or(1)
 }

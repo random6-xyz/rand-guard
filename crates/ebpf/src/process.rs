@@ -11,7 +11,8 @@ use edr_common::{
 use crate::EVENTS;
 use crate::helpers::read_data_loc_comm;
 
-#[tracepoint]
+#[tracepoint(name = "sched_process_exec", category = "sched")]
+#[inline(never)]
 pub fn sched_process_exec(ctx: TracePointContext) -> u32 {
     try_sched_process_exec(ctx).unwrap_or(1)
 }
@@ -106,7 +107,8 @@ unsafe fn read_sched_exec_filename(
     Ok(())
 }
 
-#[tracepoint]
+#[tracepoint(name = "sched_process_fork", category = "sched")]
+#[inline(never)]
 pub fn sched_process_fork(ctx: TracePointContext) -> u32 {
     try_sched_process_fork(ctx).unwrap_or(1)
 }
@@ -160,7 +162,8 @@ fn try_sched_process_fork(ctx: TracePointContext) -> Result<u32, i64> {
     Ok(0)
 }
 
-#[tracepoint]
+#[tracepoint(name = "sched_process_exit", category = "sched")]
+#[inline(never)]
 pub fn sched_process_exit(ctx: TracePointContext) -> u32 {
     try_sched_process_exit(ctx).unwrap_or(1)
 }
