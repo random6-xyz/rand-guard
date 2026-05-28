@@ -1,6 +1,7 @@
 use aya_ebpf::{helpers::r#gen, programs::TracePointContext};
 use edr_common::{
-    EVENT_SCHEMA_VERSION, EventHeader, EventKind, FILE_FILTER_MAX_PREFIXES, FileFilterConfig,
+    EVENT_SCHEMA_VERSION, EventHeader, EventKind, FILE_FILTER_MAX_PREFIXES, FILE_FILTER_PREFIX_LEN,
+    FileFilterConfig,
 };
 
 pub fn fill_header(
@@ -68,7 +69,10 @@ pub fn file_passes_filter(filter: &FileFilterConfig, filename: &[u8], filename_l
             break;
         }
         let prefix_len = filter.prefix_lens[i] as usize;
-        if prefix_len == 0 || (filename_len as usize) < prefix_len {
+        if prefix_len == 0
+            || prefix_len > FILE_FILTER_PREFIX_LEN
+            || (filename_len as usize) < prefix_len
+        {
             continue;
         }
         let mut prefix_matches = true;

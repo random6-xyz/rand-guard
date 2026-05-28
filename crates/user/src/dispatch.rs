@@ -81,6 +81,8 @@ pub fn dispatch_event(bytes: &[u8], ctx: &mut DispatchContext<'_>) -> DispatchRe
                 let event =
                     unsafe { core::ptr::read_unaligned(bytes.as_ptr() as *const ExecSyscallEvent) };
                 crate::normalize::normalize_exec_syscall(&event, ctx.table);
+            } else {
+                return DispatchResult::InvalidSchema;
             }
             return DispatchResult::Internal;
         }
@@ -416,6 +418,24 @@ mod tests {
         };
         let result = dispatch_event(bytes, &mut ctx);
         assert!(matches!(result, DispatchResult::Internal));
+    }
+
+    #[test]
+    fn malformed_exec_syscall_returns_invalid_schema() {
+        let mut h = TestHarness::new();
+        let mut ctx = h.ctx(None);
+        let mut event = ExecSyscallEvent::default();
+        event.header.kind = EventKind::ExecSyscall.as_u16();
+        event.header.version = EVENT_SCHEMA_VERSION;
+        event.header.size = ExecSyscallEvent::SIZE - 1;
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                &event as *const _ as *const u8,
+                core::mem::size_of::<ExecSyscallEvent>(),
+            )
+        };
+        let result = dispatch_event(bytes, &mut ctx);
+        assert!(matches!(result, DispatchResult::InvalidSchema));
     }
 
     #[test]

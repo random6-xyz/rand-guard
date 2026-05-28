@@ -10,7 +10,12 @@ use edr_common::{
 use crate::EVENTS;
 
 #[tracepoint(name = "sys_enter_write", category = "syscalls")]
+#[inline(never)]
 pub fn sys_enter_write(ctx: TracePointContext) -> u32 {
+    try_sys_enter_write(ctx).unwrap_or(1)
+}
+
+fn try_sys_enter_write(ctx: TracePointContext) -> Result<u32, i64> {
     let pid_tgid = bpf_get_current_pid_tgid();
     let uid_gid = bpf_get_current_uid_gid();
 
@@ -19,8 +24,8 @@ pub fn sys_enter_write(ctx: TracePointContext) -> u32 {
     let gid = (uid_gid >> 32) as u32;
     let uid = uid_gid as u32;
 
-    let fd = unsafe { ctx.read_at::<u32>(16) }.unwrap_or(0) as u64;
-    let count = unsafe { ctx.read_at::<u64>(32) }.unwrap_or(0);
+    let fd = unsafe { ctx.read_at::<u32>(16)? } as u64;
+    let count = unsafe { ctx.read_at::<u64>(32)? };
 
     if let Some(mut entry) = EVENTS.reserve::<FileWriteEvent>(0) {
         unsafe {
@@ -45,7 +50,7 @@ pub fn sys_enter_write(ctx: TracePointContext) -> u32 {
         entry.submit(0);
     }
 
-    0
+    Ok(0)
 }
 
 #[tracepoint(name = "sys_enter_writev", category = "syscalls")]

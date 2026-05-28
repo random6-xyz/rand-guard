@@ -198,16 +198,22 @@ async fn main() -> anyhow::Result<()> {
     if let Some(filter_map) = ebpf.map_mut("FILE_FILTER") {
         let mut filter = edr_common::FileFilterConfig::empty();
         let watch_paths = &config.file.watch_paths;
-        for (i, path) in watch_paths
-            .iter()
-            .take(edr_common::FILE_FILTER_MAX_PREFIXES)
-            .enumerate()
-        {
-            let bytes = path.as_bytes();
-            let len = bytes.len().min(edr_common::FILE_FILTER_PREFIX_LEN);
-            filter.prefixes[i][..len].copy_from_slice(&bytes[..len]);
-            filter.prefix_lens[i] = len as u32;
-            filter.prefix_count += 1;
+        if !config.file.watch_patterns.is_empty() {
+            warn!("kernel file prefix filter disabled because watch_patterns are configured");
+        } else if watch_paths.len() > edr_common::FILE_FILTER_MAX_PREFIXES {
+            warn!(
+                configured = watch_paths.len(),
+                max = edr_common::FILE_FILTER_MAX_PREFIXES,
+                "kernel file prefix filter disabled because too many watch_paths are configured"
+            );
+        } else {
+            for (i, path) in watch_paths.iter().enumerate() {
+                let bytes = path.as_bytes();
+                let len = bytes.len().min(edr_common::FILE_FILTER_PREFIX_LEN);
+                filter.prefixes[i][..len].copy_from_slice(&bytes[..len]);
+                filter.prefix_lens[i] = len as u32;
+                filter.prefix_count += 1;
+            }
         }
         let mut array = aya::maps::Array::<_, FilterPod>::try_from(filter_map)?;
         array.set(0, FilterPod(filter), 0)?;
@@ -282,17 +288,18 @@ async fn main() -> anyhow::Result<()> {
                                 userspace_rate_limited += 1;
                                 continue;
                             }
-                            normalized_events_output += 1;
                             if let Err(e) = output.write_normalized(&event) {
                                 userspace_output_failures += 1;
                                 warn!(error = %e, "failed to write normalized event");
                                 continue;
                             }
+                            normalized_events_output += 1;
                             for alert in rule_engine.evaluate(&event) {
-                                alerts_output += 1;
                                 if let Err(e) = output.write_alert(&alert) {
                                     userspace_output_failures += 1;
                                     warn!(error = %e, "failed to write alert");
+                                } else {
+                                    alerts_output += 1;
                                 }
                             }
                             if ci_smoke_start_seen && ci_smoke_rel_or_exit_seen && ci_smoke_file_open_seen {
