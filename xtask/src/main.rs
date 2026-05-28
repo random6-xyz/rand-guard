@@ -153,7 +153,7 @@ collect_cwd = false
 [file]
 enabled = true
 hooks = ["write"]
-watch_paths = ["/tmp"]
+watch_paths = []
 watch_patterns = []
 exclude_paths = []
 
