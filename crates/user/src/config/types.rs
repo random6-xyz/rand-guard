@@ -315,6 +315,12 @@ pub struct NetworkDetectionRule {
 mod tests {
     use super::*;
 
+    #[derive(Debug, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct RulesFile {
+        rules: Vec<RuleConfig>,
+    }
+
     #[test]
     fn parses_example_config() {
         let config = Config::from_str(include_str!("../../../../config.example.toml"))
@@ -359,6 +365,43 @@ mod tests {
         config
             .validate_current_runtime()
             .expect("example config should match current runtime support");
+    }
+
+    #[test]
+    fn parses_packaging_default_config() {
+        let config = Config::from_str(include_str!("../../../../packaging/config/rand-guard.toml"))
+            .expect("packaging default config should parse");
+
+        assert_eq!(config.agent.mode, AgentMode::Monitor);
+        assert!(config.events.process);
+        assert!(config.events.file);
+        assert!(!config.events.network);
+        assert!(!config.network.enabled);
+        assert_eq!(config.rules.len(), 3);
+        config
+            .validate_current_runtime()
+            .expect("packaging default config should match current runtime support");
+    }
+
+    #[test]
+    fn parses_packaging_sample_rules() {
+        let rules_file: RulesFile = toml::from_str(include_str!(
+            "../../../../packaging/rules.d/sample-rules.toml"
+        ))
+        .expect("packaging sample rules should parse");
+
+        assert_eq!(rules_file.rules.len(), 3);
+        for rule in &rules_file.rules {
+            if rule.enabled {
+                crate::config::validation::validate_rule(rule)
+                    .expect("enabled sample rule should validate");
+            } else {
+                let mut enabled_rule = rule.clone();
+                enabled_rule.enabled = true;
+                crate::config::validation::validate_rule(&enabled_rule)
+                    .expect("sample rule should validate when enabled");
+            }
+        }
     }
 
     #[test]
