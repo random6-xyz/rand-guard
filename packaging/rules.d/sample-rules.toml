@@ -1,0 +1,31 @@
+[[rules]]
+id = "PROC-002"
+name = "Shell spawned by service manager"
+enabled = false
+type = "process"
+severity = "medium"
+action = "alert"
+parent_names = ["systemd", "supervisord"]
+process_names = ["sh", "bash", "dash"]
+
+[[rules]]
+id = "FILE-002"
+name = "Systemd service file changed"
+enabled = false
+type = "file"
+severity = "high"
+action = "alert"
+paths = ["/etc/systemd/system/", "/usr/lib/systemd/system/", "/run/systemd/system/"]
+patterns = ["*.service"]
+operations = ["file_write", "file_rename", "file_unlink"]
+
+[[rules]]
+id = "NET-002"
+name = "Interactive tool on suspicious port"
+enabled = false
+type = "network"
+severity = "medium"
+action = "alert"
+direction = "outbound"
+ports = [4444, 1337, 31337]
+process_names = ["nc", "ncat", "socat", "bash", "sh"]
