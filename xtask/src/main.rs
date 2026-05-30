@@ -11,6 +11,7 @@ const USAGE: &str = "usage: cargo xtask <command> [command...]\n\n\
         l, clippy       Clippy all\n\
         t, test         Test userspace\n\n\
         b, build        Build release all\n\
+        p, package      Build release all and create a tarball\n\
         r, run          Run\n\
         tp, throughput  Build release all and run local throughput measurement\n\n\
         cs, ci-smoke    Build release all, run with CI_SMOKE\n\
@@ -33,6 +34,7 @@ fn main() -> anyhow::Result<()> {
                 build_ebpf(true)?;
                 build_user(true)?;
             }
+            "p" | "package" => package_release()?,
             "r" | "run" => run_user(false, false)?,
             "tp" | "throughput" => run_throughput()?,
             "cs" | "ci-smoke" => {
@@ -88,6 +90,111 @@ fn build_ebpf(release: bool) -> anyhow::Result<()> {
     if !status.success() {
         bail!("eBPF build failed");
     }
+
+    Ok(())
+}
+
+fn package_release() -> anyhow::Result<()> {
+    build_ebpf(true)?;
+    build_user(true)?;
+
+    let repo_root = std::env::current_dir().context("failed to get current directory")?;
+    let version = package_version(&repo_root.join("crates/user/Cargo.toml"))?;
+    let arch = std::env::consts::ARCH;
+    let package_name = format!("rand-guard-{version}-{arch}");
+    let package_dir = repo_root.join("target/package");
+    let stage_dir = package_dir.join(&package_name);
+    let tarball = package_dir.join(format!("{package_name}.tar.gz"));
+    let checksum = package_dir.join(format!("{package_name}.tar.gz.sha256"));
+
+    if stage_dir.exists() {
+        std::fs::remove_dir_all(&stage_dir).context("failed to clean package staging directory")?;
+    }
+    std::fs::create_dir_all(&package_dir).context("failed to create package output directory")?;
+
+    copy_file(
+        &repo_root.join("target/release/edr-user"),
+        &stage_dir.join("target/release/edr-user"),
+    )?;
+    copy_file(
+        &repo_root.join("target/bpfel-unknown-none/release/edr-ebpf"),
+        &stage_dir.join("target/bpfel-unknown-none/release/edr-ebpf"),
+    )?;
+    copy_file(
+        &repo_root.join("packaging/config/rand-guard.toml"),
+        &stage_dir.join("packaging/config/rand-guard.toml"),
+    )?;
+    copy_file(
+        &repo_root.join("packaging/rules.d/sample-rules.toml"),
+        &stage_dir.join("packaging/rules.d/sample-rules.toml"),
+    )?;
+    copy_file(
+        &repo_root.join("packaging/systemd/rand-guard.service"),
+        &stage_dir.join("packaging/systemd/rand-guard.service"),
+    )?;
+    copy_file(
+        &repo_root.join("scripts/install.sh"),
+        &stage_dir.join("scripts/install.sh"),
+    )?;
+
+    run(
+        Command::new("tar")
+            .arg("-czf")
+            .arg(&tarball)
+            .arg("-C")
+            .arg(&package_dir)
+            .arg(&package_name),
+        "create package tarball",
+    )?;
+
+    let output = Command::new("sha256sum")
+        .arg(&tarball)
+        .output()
+        .context("failed to spawn sha256sum")?;
+    if !output.status.success() {
+        bail!("sha256sum failed with exit code {}", output.status);
+    }
+    std::fs::write(&checksum, output.stdout).context("failed to write package checksum")?;
+
+    println!("package: {}", tarball.display());
+    println!("checksum: {}", checksum.display());
+
+    Ok(())
+}
+
+fn package_version(manifest: &Path) -> anyhow::Result<String> {
+    let contents = std::fs::read_to_string(manifest)
+        .with_context(|| format!("failed to read manifest {}", manifest.display()))?;
+    let mut in_package = false;
+
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[package]" {
+            in_package = true;
+            continue;
+        }
+        if in_package && trimmed.starts_with('[') {
+            break;
+        }
+        if in_package && trimmed.starts_with("version") {
+            let (_, value) = trimmed
+                .split_once('=')
+                .context("package version line is missing '='")?;
+            return Ok(value.trim().trim_matches('"').to_string());
+        }
+    }
+
+    bail!("failed to find package version in {}", manifest.display())
+}
+
+fn copy_file(src: &Path, dst: &Path) -> anyhow::Result<()> {
+    let parent = dst
+        .parent()
+        .with_context(|| format!("destination has no parent: {}", dst.display()))?;
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("failed to create directory {}", parent.display()))?;
+    std::fs::copy(src, dst)
+        .with_context(|| format!("failed to copy {} to {}", src.display(), dst.display()))?;
 
     Ok(())
 }
