@@ -102,10 +102,11 @@ fn package_release() -> anyhow::Result<()> {
     let version = package_version(&repo_root.join("crates/user/Cargo.toml"))?;
     let arch = std::env::consts::ARCH;
     let package_name = format!("rand-guard-{version}-{arch}");
+    let tarball_name = format!("{package_name}.tar.gz");
     let package_dir = repo_root.join("target/package");
     let stage_dir = package_dir.join(&package_name);
-    let tarball = package_dir.join(format!("{package_name}.tar.gz"));
-    let checksum = package_dir.join(format!("{package_name}.tar.gz.sha256"));
+    let tarball = package_dir.join(&tarball_name);
+    let checksum = package_dir.join(format!("{tarball_name}.sha256"));
 
     if stage_dir.exists() {
         std::fs::remove_dir_all(&stage_dir).context("failed to clean package staging directory")?;
@@ -148,7 +149,8 @@ fn package_release() -> anyhow::Result<()> {
     )?;
 
     let output = Command::new("sha256sum")
-        .arg(&tarball)
+        .arg(&tarball_name)
+        .current_dir(&package_dir)
         .output()
         .context("failed to spawn sha256sum")?;
     if !output.status.success() {

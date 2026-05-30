@@ -27,6 +27,7 @@ root="/"
 source_dir=""
 force=0
 dry_run=0
+missing_sources=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -94,12 +95,8 @@ install_file() {
 require_source() {
   local path="$1"
   if [ ! -f "$path" ]; then
-    if [ "$dry_run" -eq 1 ]; then
-      echo "DRY-RUN: missing required source file: $path" >&2
-      return 0
-    fi
     echo "missing required source file: $path" >&2
-    exit 1
+    missing_sources=1
   fi
 }
 
@@ -114,6 +111,11 @@ require_source "$ebpf_obj"
 require_source "$default_config"
 require_source "$sample_rules"
 require_source "$systemd_unit"
+
+if [ "$missing_sources" -ne 0 ]; then
+  echo "build or package rand-guard before running the installer" >&2
+  exit 1
+fi
 
 bin_dir="$(join_root /usr/local/bin)"
 lib_dir="$(join_root /usr/local/lib/rand-guard)"
