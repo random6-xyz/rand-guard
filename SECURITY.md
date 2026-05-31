@@ -2,7 +2,7 @@
 
 `rand-guard` is a study-focused Rust eBPF EDR. It runs privileged code when loading eBPF programs, so vulnerabilities should be reported privately.
 
-## Reporting A Vulnerability
+## Reporting a Vulnerability
 
 Use GitHub Security Advisories for this repository.
 

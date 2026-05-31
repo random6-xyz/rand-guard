@@ -160,7 +160,7 @@ Expected stdout or journal output includes records such as:
 
 ```json
 {"event_type":"process_start","pid":123,"comm":"true"}
-{"event_type":"file_write","filename":"/etc/rand-guard-quickstart.service"}
+{"event_type":"file_write","resolved_path":"/etc/rand-guard-quickstart.service"}
 ```
 
 Actual records include more fields, including timestamps, process context, and truncation flags.

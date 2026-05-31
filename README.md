@@ -165,7 +165,7 @@ The agent writes one JSON object per line. Process events look like:
 File events can include detection fields when a built-in persistence rule matches:
 
 ```json
-{"event_type":"file_write","timestamp_ns":123,"pid":100,"comm":"systemctl","filename":"/etc/systemd/system/demo.service","alert":true,"detection_type":"systemd_service_modified"}
+{"event_type":"file_write","timestamp_ns":123,"pid":100,"comm":"systemctl","resolved_path":"/etc/systemd/system/demo.service","alert":true,"detection_type":"systemd_service_modified"}
 ```
 
 Rule matches emit a separate stable alert event:

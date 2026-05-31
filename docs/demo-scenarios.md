@@ -73,7 +73,7 @@ sudo rm -f /etc/systemd/system/rand-guard-demo.service
 Expected output may include file records with detection fields such as:
 
 ```json
-{"event_type":"file_write","filename":"/etc/systemd/system/rand-guard-demo.service","alert":true,"detection_type":"systemd_service_modified"}
+{"event_type":"file_write","resolved_path":"/etc/systemd/system/rand-guard-demo.service","alert":true,"detection_type":"systemd_service_modified"}
 ```
 
 Cleanup:
