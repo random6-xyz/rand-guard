@@ -1,26 +1,31 @@
+mod attach;
 mod config;
 mod detections;
+mod dispatch;
 mod logging;
 mod normalize;
 mod output;
 mod privilege;
 mod process_table;
+mod rate_limiter;
+mod rules;
 
 use anyhow::Context;
-use aya::{maps::ring_buf::RingBuf, programs::TracePoint};
-use edr_common::{
-    EVENT_SCHEMA_VERSION, EventKind, ExecSyscallEvent, FileOpenAt2Event, FileOpenEvent,
-    FilePWrite64Event, FileRenameAt2Event, FileRenameAtEvent, FileRenameEvent, FileUnlinkAtEvent,
-    FileUnlinkEvent, FileWriteEvent, FileWriteVEvent, NetworkBindEvent, NetworkConnectEvent,
-    NetworkListenEvent, ProcessExecEvent, ProcessExitEvent, ProcessForkEvent,
-};
+use aya::maps::ring_buf::RingBuf;
 use tokio::io::unix::AsyncFd;
 use tokio::signal;
-use tokio::time::{Duration, sleep};
+use tokio::time::{Duration, Instant, sleep};
 use tracing::{info, warn};
 
-use crate::normalize::NormalizedEvent;
+use crate::dispatch::{DispatchContext, DispatchResult};
+use crate::output::{HealthRecord, read_rss_kb};
 use crate::process_table::ProcessTable;
+use crate::rate_limiter::RateLimiter;
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct FilterPod(edr_common::FileFilterConfig);
+unsafe impl aya::Pod for FilterPod {}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -31,7 +36,7 @@ async fn main() -> anyhow::Result<()> {
     privilege::ensure_sufficient()?;
 
     let ebpf_path = std::env::var("EDR_EBPF_OBJECT")
-        .unwrap_or_else(|_| "crates/ebpf/target/bpfel-unknown-none/debug/edr-ebpf".to_string());
+        .unwrap_or_else(|_| "target/bpfel-unknown-none/release/edr-ebpf".to_string());
     let ci_smoke = std::env::var("CI_SMOKE").as_deref() == Ok("1");
 
     let data = std::fs::read(&ebpf_path)?;
@@ -49,13 +54,13 @@ async fn main() -> anyhow::Result<()> {
         config.network.hooks.iter().map(|s| s.as_str()).collect();
 
     if process_hooks.contains("execve") {
-        attach_tracepoint(
+        attach::attach_tracepoint(
             &mut ebpf,
             "sched_process_exec",
             "sched",
             "sched_process_exec",
         )?;
-        attach_tracepoint(
+        attach::attach_tracepoint(
             &mut ebpf,
             "sys_enter_execve",
             "syscalls",
@@ -64,7 +69,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if process_hooks.contains("fork") {
-        attach_tracepoint(
+        attach::attach_tracepoint(
             &mut ebpf,
             "sched_process_fork",
             "sched",
@@ -73,7 +78,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if process_hooks.contains("exit") {
-        attach_tracepoint(
+        attach::attach_tracepoint(
             &mut ebpf,
             "sched_process_exit",
             "sched",
@@ -82,7 +87,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if process_hooks.contains("execveat") {
-        attach_tracepoint(
+        attach::attach_tracepoint(
             &mut ebpf,
             "sys_enter_execveat",
             "syscalls",
@@ -92,7 +97,7 @@ async fn main() -> anyhow::Result<()> {
 
     if config.events.file && config.file.enabled {
         if file_hooks.contains("openat") {
-            attach_tracepoint(
+            attach::attach_tracepoint(
                 &mut ebpf,
                 "sys_enter_openat",
                 "syscalls",
@@ -100,7 +105,7 @@ async fn main() -> anyhow::Result<()> {
             )?;
         }
         if file_hooks.contains("openat2") {
-            attach_tracepoint(
+            attach::attach_tracepoint(
                 &mut ebpf,
                 "sys_enter_openat2",
                 "syscalls",
@@ -108,10 +113,10 @@ async fn main() -> anyhow::Result<()> {
             )?;
         }
         if file_hooks.contains("write") {
-            attach_tracepoint(&mut ebpf, "sys_enter_write", "syscalls", "sys_enter_write")?;
+            attach::attach_tracepoint(&mut ebpf, "sys_enter_write", "syscalls", "sys_enter_write")?;
         }
         if file_hooks.contains("writev") {
-            attach_tracepoint(
+            attach::attach_tracepoint(
                 &mut ebpf,
                 "sys_enter_writev",
                 "syscalls",
@@ -119,7 +124,7 @@ async fn main() -> anyhow::Result<()> {
             )?;
         }
         if file_hooks.contains("pwrite64") {
-            attach_tracepoint(
+            attach::attach_tracepoint(
                 &mut ebpf,
                 "sys_enter_pwrite64",
                 "syscalls",
@@ -127,7 +132,7 @@ async fn main() -> anyhow::Result<()> {
             )?;
         }
         if file_hooks.contains("rename") {
-            attach_tracepoint(
+            attach::attach_tracepoint(
                 &mut ebpf,
                 "sys_enter_rename",
                 "syscalls",
@@ -135,7 +140,7 @@ async fn main() -> anyhow::Result<()> {
             )?;
         }
         if file_hooks.contains("renameat") {
-            attach_tracepoint(
+            attach::attach_tracepoint(
                 &mut ebpf,
                 "sys_enter_renameat",
                 "syscalls",
@@ -143,7 +148,7 @@ async fn main() -> anyhow::Result<()> {
             )?;
         }
         if file_hooks.contains("renameat2") {
-            attach_tracepoint(
+            attach::attach_tracepoint(
                 &mut ebpf,
                 "sys_enter_renameat2",
                 "syscalls",
@@ -151,7 +156,7 @@ async fn main() -> anyhow::Result<()> {
             )?;
         }
         if file_hooks.contains("unlink") {
-            attach_tracepoint(
+            attach::attach_tracepoint(
                 &mut ebpf,
                 "sys_enter_unlink",
                 "syscalls",
@@ -159,7 +164,7 @@ async fn main() -> anyhow::Result<()> {
             )?;
         }
         if file_hooks.contains("unlinkat") {
-            attach_tracepoint(
+            attach::attach_tracepoint(
                 &mut ebpf,
                 "sys_enter_unlinkat",
                 "syscalls",
@@ -170,7 +175,7 @@ async fn main() -> anyhow::Result<()> {
 
     if config.events.network && config.network.enabled {
         if network_hooks.contains("connect") {
-            attach_tracepoint(
+            attach::attach_tracepoint(
                 &mut ebpf,
                 "sys_enter_connect",
                 "syscalls",
@@ -178,10 +183,10 @@ async fn main() -> anyhow::Result<()> {
             )?;
         }
         if network_hooks.contains("bind") {
-            attach_tracepoint(&mut ebpf, "sys_enter_bind", "syscalls", "sys_enter_bind")?;
+            attach::attach_tracepoint(&mut ebpf, "sys_enter_bind", "syscalls", "sys_enter_bind")?;
         }
         if network_hooks.contains("listen") {
-            attach_tracepoint(
+            attach::attach_tracepoint(
                 &mut ebpf,
                 "sys_enter_listen",
                 "syscalls",
@@ -190,14 +195,56 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    if let Some(filter_map) = ebpf.map_mut("FILE_FILTER") {
+        let mut filter = edr_common::FileFilterConfig::empty();
+        let watch_paths = &config.file.watch_paths;
+        if !config.file.watch_patterns.is_empty() {
+            warn!("kernel file prefix filter disabled because watch_patterns are configured");
+        } else if watch_paths.len() > edr_common::FILE_FILTER_MAX_PREFIXES {
+            warn!(
+                configured = watch_paths.len(),
+                max = edr_common::FILE_FILTER_MAX_PREFIXES,
+                "kernel file prefix filter disabled because too many watch_paths are configured"
+            );
+        } else {
+            for (i, path) in watch_paths.iter().enumerate() {
+                let bytes = path.as_bytes();
+                let len = bytes.len().min(edr_common::FILE_FILTER_PREFIX_LEN);
+                filter.prefixes[i][..len].copy_from_slice(&bytes[..len]);
+                filter.prefix_lens[i] = len as u32;
+                filter.prefix_count += 1;
+            }
+        }
+        let mut array = aya::maps::Array::<_, FilterPod>::try_from(filter_map)?;
+        array.set(0, FilterPod(filter), 0)?;
+    }
+
     let ring_buf = RingBuf::try_from(ebpf.map_mut("EVENTS").context("EVENTS map not found")?)?;
     let mut async_ring = AsyncFd::new(ring_buf)?;
     let mut output = output::JsonOutput::stdout();
-    let mut table = ProcessTable::new();
+    let mut table = ProcessTable::with_limits(
+        config.performance.max_process_cache_entries,
+        config.performance.max_pending_exec_sources,
+    );
+    let rule_engine = rules::RuleEngine::new(&config.rules);
+    let mut rate_limiter = RateLimiter::new(config.performance.max_events_per_second);
 
     let mut ci_smoke_start_seen = false;
     let mut ci_smoke_rel_or_exit_seen = false;
     let mut ci_smoke_file_open_seen = false;
+
+    let start_time = Instant::now();
+    let mut raw_events_read: u64 = 0;
+    let mut normalized_events_output: u64 = 0;
+    let mut alerts_output: u64 = 0;
+    let mut userspace_filtered: u64 = 0;
+    let mut userspace_rate_limited: u64 = 0;
+    let mut userspace_invalid_schema: u64 = 0;
+    let mut userspace_unsupported_kind: u64 = 0;
+    let mut userspace_output_failures: u64 = 0;
+
+    let health_interval = Duration::from_secs(10);
+    let mut next_health = start_time + health_interval;
 
     info!(
         agent = %config.agent.id,
@@ -208,245 +255,67 @@ async fn main() -> anyhow::Result<()> {
     );
 
     loop {
+        if ci_smoke && start_time.elapsed() >= Duration::from_secs(10) {
+            anyhow::bail!(
+                "CI smoke timeout: required process and file events were not observed within 10 seconds."
+            );
+        }
+
         tokio::select! {
             ready = async_ring.readable_mut() => {
                 let mut guard = ready?;
                 let ring_buf = guard.get_inner_mut();
                 while let Some(item) = ring_buf.next() {
                     let bytes: &[u8] = &item;
-                    if bytes.len() < core::mem::size_of::<edr_common::EventHeader>() {
-                        continue;
-                    }
+                    raw_events_read += 1;
 
-                    let header = unsafe {
-                        core::ptr::read_unaligned(bytes.as_ptr() as *const edr_common::EventHeader)
+                    let mut dispatch_ctx = DispatchContext {
+                        table: &mut table,
+                        file_config: Some(&config.file),
+                        persistence_detections: &config.detections.persistence,
+                        network_detections: &config.detections.network,
+                        ci_smoke,
+                        ci_smoke_start_seen: &mut ci_smoke_start_seen,
+                        ci_smoke_rel_or_exit_seen: &mut ci_smoke_rel_or_exit_seen,
+                        ci_smoke_file_open_seen: &mut ci_smoke_file_open_seen,
                     };
 
-                    if header.version != EVENT_SCHEMA_VERSION {
-                        continue;
-                    }
+                    let result = dispatch::dispatch_event(bytes, &mut dispatch_ctx);
 
-                    let normalized = match header.kind {
-                        k if k == EventKind::ProcessExec.as_u16() => {
-                            if bytes.len() >= core::mem::size_of::<ProcessExecEvent>()
-                                && header.size as usize == core::mem::size_of::<ProcessExecEvent>()
-                            {
-                                let event = unsafe {
-                                    core::ptr::read_unaligned(bytes.as_ptr() as *const ProcessExecEvent)
-                                };
-                                Some(crate::normalize::normalize_exec(&event, &mut table))
-                            } else {
-                                None
+                    match result {
+                        DispatchResult::Normalized(event) => {
+                            if !rate_limiter.allow(&event) {
+                                userspace_rate_limited += 1;
+                                continue;
                             }
-                        }
-                        k if k == EventKind::ProcessFork.as_u16() => {
-                            if bytes.len() >= core::mem::size_of::<ProcessForkEvent>()
-                                && header.size as usize == core::mem::size_of::<ProcessForkEvent>()
-                            {
-                                let event = unsafe {
-                                    core::ptr::read_unaligned(bytes.as_ptr() as *const ProcessForkEvent)
-                                };
-                                Some(crate::normalize::normalize_fork(&event, &mut table))
-                            } else {
-                                None
+                            if let Err(e) = output.write_normalized(&event) {
+                                userspace_output_failures += 1;
+                                warn!(error = %e, "failed to write normalized event");
+                                continue;
                             }
-                        }
-                        k if k == EventKind::ProcessExit.as_u16() => {
-                            if bytes.len() >= core::mem::size_of::<ProcessExitEvent>()
-                                && header.size as usize == core::mem::size_of::<ProcessExitEvent>()
-                            {
-                                let event = unsafe {
-                                    core::ptr::read_unaligned(bytes.as_ptr() as *const ProcessExitEvent)
-                                };
-                                Some(crate::normalize::normalize_exit(&event, &mut table))
-                            } else {
-                                None
-                            }
-                        }
-                        k if k == EventKind::ExecSyscall.as_u16() => {
-                            if bytes.len() >= core::mem::size_of::<ExecSyscallEvent>()
-                                && header.size as usize == core::mem::size_of::<ExecSyscallEvent>()
-                            {
-                                let event = unsafe {
-                                    core::ptr::read_unaligned(bytes.as_ptr() as *const ExecSyscallEvent)
-                                };
-                                crate::normalize::normalize_exec_syscall(&event, &mut table);
-                            }
-                            None
-                        }
-                        k if k == EventKind::FileOpen.as_u16() => {
-                            if bytes.len() >= core::mem::size_of::<FileOpenEvent>()
-                                && header.size as usize == core::mem::size_of::<FileOpenEvent>()
-                            {
-                                let event = unsafe {
-                                    core::ptr::read_unaligned(bytes.as_ptr() as *const FileOpenEvent)
-                                };
-                                crate::normalize::normalize_file_open(&event, &mut table, Some(&config.file), &config.detections.persistence)
-                            } else {
-                                None
-                            }
-                        }
-                        k if k == EventKind::FileOpenAt2.as_u16() => {
-                            if bytes.len() >= core::mem::size_of::<FileOpenAt2Event>()
-                                && header.size as usize == core::mem::size_of::<FileOpenAt2Event>()
-                            {
-                                let event = unsafe {
-                                    core::ptr::read_unaligned(bytes.as_ptr() as *const FileOpenAt2Event)
-                                };
-                                crate::normalize::normalize_file_openat2(&event, &mut table, Some(&config.file), &config.detections.persistence)
-                            } else {
-                                None
-                            }
-                        }
-                        k if k == EventKind::FileWrite.as_u16() => {
-                            if bytes.len() >= core::mem::size_of::<FileWriteEvent>()
-                                && header.size as usize == core::mem::size_of::<FileWriteEvent>()
-                            {
-                                let event = unsafe {
-                                    core::ptr::read_unaligned(bytes.as_ptr() as *const FileWriteEvent)
-                                };
-                                crate::normalize::normalize_file_write(&event, &mut table, Some(&config.file), &config.detections.persistence)
-                            } else {
-                                None
-                            }
-                        }
-                        k if k == EventKind::FileWriteV.as_u16() => {
-                            if bytes.len() >= core::mem::size_of::<FileWriteVEvent>()
-                                && header.size as usize == core::mem::size_of::<FileWriteVEvent>()
-                            {
-                                let event = unsafe {
-                                    core::ptr::read_unaligned(bytes.as_ptr() as *const FileWriteVEvent)
-                                };
-                                crate::normalize::normalize_file_writev(&event, &mut table, Some(&config.file), &config.detections.persistence)
-                            } else {
-                                None
-                            }
-                        }
-                        k if k == EventKind::FilePWrite64.as_u16() => {
-                            if bytes.len() >= core::mem::size_of::<FilePWrite64Event>()
-                                && header.size as usize == core::mem::size_of::<FilePWrite64Event>()
-                            {
-                                let event = unsafe {
-                                    core::ptr::read_unaligned(bytes.as_ptr() as *const FilePWrite64Event)
-                                };
-                                crate::normalize::normalize_file_pwrite64(&event, &mut table, Some(&config.file), &config.detections.persistence)
-                            } else {
-                                None
-                            }
-                        }
-                        k if k == EventKind::FileRename.as_u16() => {
-                            if bytes.len() >= core::mem::size_of::<FileRenameEvent>()
-                                && header.size as usize == core::mem::size_of::<FileRenameEvent>()
-                            {
-                                let event = unsafe {
-                                    core::ptr::read_unaligned(bytes.as_ptr() as *const FileRenameEvent)
-                                };
-                                crate::normalize::normalize_file_rename(&event, &mut table, Some(&config.file), &config.detections.persistence)
-                            } else {
-                                None
-                            }
-                        }
-                        k if k == EventKind::FileRenameAt.as_u16() => {
-                            if bytes.len() >= core::mem::size_of::<FileRenameAtEvent>()
-                                && header.size as usize == core::mem::size_of::<FileRenameAtEvent>()
-                            {
-                                let event = unsafe {
-                                    core::ptr::read_unaligned(bytes.as_ptr() as *const FileRenameAtEvent)
-                                };
-                                crate::normalize::normalize_file_renameat(&event, &mut table, Some(&config.file), &config.detections.persistence)
-                            } else {
-                                None
-                            }
-                        }
-                        k if k == EventKind::FileRenameAt2.as_u16() => {
-                            if bytes.len() >= core::mem::size_of::<FileRenameAt2Event>()
-                                && header.size as usize == core::mem::size_of::<FileRenameAt2Event>()
-                            {
-                                let event = unsafe {
-                                    core::ptr::read_unaligned(bytes.as_ptr() as *const FileRenameAt2Event)
-                                };
-                                crate::normalize::normalize_file_renameat2(&event, &mut table, Some(&config.file), &config.detections.persistence)
-                            } else {
-                                None
-                            }
-                        }
-                        k if k == EventKind::FileUnlink.as_u16() => {
-                            if bytes.len() >= core::mem::size_of::<FileUnlinkEvent>()
-                                && header.size as usize == core::mem::size_of::<FileUnlinkEvent>()
-                            {
-                                let event = unsafe {
-                                    core::ptr::read_unaligned(bytes.as_ptr() as *const FileUnlinkEvent)
-                                };
-                                crate::normalize::normalize_file_unlink(&event, &mut table, Some(&config.file), &config.detections.persistence)
-                            } else {
-                                None
-                            }
-                        }
-                        k if k == EventKind::FileUnlinkAt.as_u16() => {
-                            if bytes.len() >= core::mem::size_of::<FileUnlinkAtEvent>()
-                                && header.size as usize == core::mem::size_of::<FileUnlinkAtEvent>()
-                            {
-                                let event = unsafe {
-                                    core::ptr::read_unaligned(bytes.as_ptr() as *const FileUnlinkAtEvent)
-                                };
-                                crate::normalize::normalize_file_unlinkat(&event, &mut table, Some(&config.file), &config.detections.persistence)
-                            } else {
-                                None
-                            }
-                        }
-                        k if k == EventKind::NetworkConnect.as_u16() => {
-                            if bytes.len() >= core::mem::size_of::<NetworkConnectEvent>()
-                                && header.size as usize == core::mem::size_of::<NetworkConnectEvent>()
-                            {
-                                let event = unsafe {
-                                    core::ptr::read_unaligned(bytes.as_ptr() as *const NetworkConnectEvent)
-                                };
-                                crate::normalize::normalize_network_connect(&event, &mut table, &config.detections.network)
-                            } else {
-                                None
-                            }
-                        }
-                        k if k == EventKind::NetworkBind.as_u16() => {
-                            if bytes.len() >= core::mem::size_of::<NetworkBindEvent>()
-                                && header.size as usize == core::mem::size_of::<NetworkBindEvent>()
-                            {
-                                let event = unsafe {
-                                    core::ptr::read_unaligned(bytes.as_ptr() as *const NetworkBindEvent)
-                                };
-                                crate::normalize::normalize_network_bind(&event, &mut table, &config.detections.network)
-                            } else {
-                                None
-                            }
-                        }
-                        k if k == EventKind::NetworkListen.as_u16() => {
-                            if bytes.len() >= core::mem::size_of::<NetworkListenEvent>()
-                                && header.size as usize == core::mem::size_of::<NetworkListenEvent>()
-                            {
-                                let event = unsafe {
-                                    core::ptr::read_unaligned(bytes.as_ptr() as *const NetworkListenEvent)
-                                };
-                                crate::normalize::normalize_network_listen(&event, &mut table, &config.detections.network)
-                            } else {
-                                None
-                            }
-                        }
-                        _ => None,
-                    };
-
-                    if let Some(event) = normalized {
-                        output.write_normalized(&event)?;
-                        if ci_smoke {
-                            match &event {
-                                NormalizedEvent::ProcessStart(_) => ci_smoke_start_seen = true,
-                                NormalizedEvent::ProcessRelationship(_) |
-                                NormalizedEvent::ProcessExit(_) => ci_smoke_rel_or_exit_seen = true,
-                                NormalizedEvent::FileOpen(_) => ci_smoke_file_open_seen = true,
-                                _ => {}
+                            normalized_events_output += 1;
+                            for alert in rule_engine.evaluate(&event) {
+                                if let Err(e) = output.write_alert(&alert) {
+                                    userspace_output_failures += 1;
+                                    warn!(error = %e, "failed to write alert");
+                                } else {
+                                    alerts_output += 1;
+                                }
                             }
                             if ci_smoke_start_seen && ci_smoke_rel_or_exit_seen && ci_smoke_file_open_seen {
                                 return Ok(());
                             }
                         }
+                        DispatchResult::Filtered => {
+                            userspace_filtered += 1;
+                        }
+                        DispatchResult::InvalidSchema => {
+                            userspace_invalid_schema += 1;
+                        }
+                        DispatchResult::Unsupported => {
+                            userspace_unsupported_kind += 1;
+                        }
+                        DispatchResult::Internal => {}
                     }
                 }
                 guard.clear_ready();
@@ -457,6 +326,28 @@ async fn main() -> anyhow::Result<()> {
                 }
                 anyhow::bail!("CI smoke timeout: no ringbuf event received within 10 seconds.");
             },
+            _ = sleep(next_health.saturating_duration_since(Instant::now())), if !ci_smoke => {
+                let record = HealthRecord {
+                    raw_events_read,
+                    normalized_events_output,
+                    alerts_output,
+                    userspace_filtered,
+                    userspace_rate_limited,
+                    userspace_invalid_schema,
+                    userspace_unsupported_kind,
+                    userspace_output_failures,
+                    process_table_size: table.record_count(),
+                    pending_exec_source_size: table.pending_exec_source_count(),
+                    process_records_evicted: table.records_evicted,
+                    pending_sources_evicted: table.pending_evicted,
+                    uptime_secs: start_time.elapsed().as_secs(),
+                    rss_kb: read_rss_kb(),
+                };
+                if let Err(e) = output.write_health(&record) {
+                    warn!(error = %e, "failed to write health record");
+                }
+                next_health = Instant::now() + health_interval;
+            },
             _ = signal::ctrl_c() => {
                 info!("shutting down");
                 break;
@@ -464,23 +355,25 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    Ok(())
-}
+    let record = HealthRecord {
+        raw_events_read,
+        normalized_events_output,
+        alerts_output,
+        userspace_filtered,
+        userspace_rate_limited,
+        userspace_invalid_schema,
+        userspace_unsupported_kind,
+        userspace_output_failures,
+        process_table_size: table.record_count(),
+        pending_exec_source_size: table.pending_exec_source_count(),
+        process_records_evicted: table.records_evicted,
+        pending_sources_evicted: table.pending_evicted,
+        uptime_secs: start_time.elapsed().as_secs(),
+        rss_kb: read_rss_kb(),
+    };
+    if let Err(e) = output.write_health(&record) {
+        warn!(error = %e, "failed to write final health record");
+    }
 
-fn attach_tracepoint(
-    ebpf: &mut aya::Ebpf,
-    program_name: &str,
-    category: &str,
-    event: &str,
-) -> anyhow::Result<()> {
-    let program: &mut TracePoint = ebpf
-        .program_mut(program_name)
-        .with_context(|| format!("program '{}' not found", program_name))?
-        .try_into()
-        .with_context(|| format!("program '{}' is not a tracepoint", program_name))?;
-
-    program.load()?;
-    program.attach(category, event)?;
-    info!(program = %program_name, category = %category, event = %event, "tracepoint attached");
     Ok(())
 }

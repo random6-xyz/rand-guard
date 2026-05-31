@@ -1,6 +1,6 @@
 [agent]
-id = "dev-host-001"
-mode = "monitor" # monitor | detect
+id = "rand-guard-host"
+mode = "monitor"
 log_level = "info"
 
 [ebpf]
@@ -22,10 +22,10 @@ collect_cwd = false
 
 [file]
 enabled = true
-hooks = ["openat", "openat2", "write", "rename", "renameat2", "unlink", "unlinkat"]
-watch_paths = ["/etc", "/usr/bin", "/bin"]
-watch_patterns = ["*.service"]
-exclude_paths = ["/var/log", "/tmp", "/proc", "/sys"]
+hooks = ["openat", "openat2", "write", "writev", "pwrite64", "rename", "renameat", "renameat2", "unlink", "unlinkat"]
+watch_paths = ["/etc", "/usr/bin", "/usr/local/bin", "/bin"]
+watch_patterns = ["*.service", "crontab"]
+exclude_paths = ["/var/log", "/tmp", "/proc", "/sys", "/dev"]
 
 [network]
 enabled = false
@@ -45,14 +45,14 @@ process_names = ["sh", "bash", "dash"]
 
 [[rules]]
 id = "FILE-001"
-name = "Sensitive file touched"
+name = "Persistence-sensitive file modified"
 enabled = false
 type = "file"
 severity = "high"
 action = "alert"
-paths = ["/etc/passwd", "/etc/shadow", "/etc/sudoers"]
-operations = ["file_open", "file_write", "file_unlink", "file_rename"]
-patterns = []
+paths = ["/etc/systemd/system/", "/etc/cron.d/", "/etc/crontab"]
+patterns = ["*.service"]
+operations = ["file_write", "file_rename", "file_unlink"]
 
 [[rules]]
 id = "NET-001"
@@ -79,9 +79,10 @@ operations = ["file_open", "file_write", "file_rename", "file_unlink"]
 name = "suspicious_outbound_port"
 directions = ["outbound"]
 ports = [4444, 1337, 31337]
+process_names = ["nc", "ncat", "socat", "bash", "sh"]
 
 [output]
-type = "stdout" # stdout is supported by the current MVP runtime
+type = "stdout"
 format = "json"
 
 [performance]

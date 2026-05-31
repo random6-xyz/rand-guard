@@ -1,0 +1,24 @@
+[Unit]
+Description=Rand Guard eBPF EDR agent
+Documentation=https://github.com/rand-guard/rand-guard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=EDR_CONFIG=/etc/rand-guard/config.toml
+Environment=EDR_EBPF_OBJECT=/usr/local/lib/rand-guard/edr-ebpf
+ExecStart=/usr/local/bin/rand-guard
+Restart=on-failure
+RestartSec=5s
+
+# Loading eBPF programs requires root or equivalent capabilities.
+User=root
+Group=root
+NoNewPrivileges=false
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
